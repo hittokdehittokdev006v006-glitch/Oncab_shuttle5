@@ -121,11 +121,12 @@ export const TripsPage: React.FC<TripsPageProps> = ({ onNotify }) => {
   }, [routeStops]);
 
   // Sub-modals
-  const [actionModal, setActionModal] = useState<'reschedule' | 'driver' | 'vehicle' | 'capacity' | null>(null);
+  const [actionModal, setActionModal] = useState<'reschedule' | 'driver' | 'vehicle' | 'route' | 'capacity' | null>(null);
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [rescheduleTime, setRescheduleTime] = useState('');
   const [selectedNewDriver, setSelectedNewDriver] = useState('');
   const [selectedNewVehicle, setSelectedNewVehicle] = useState('');
+  const [selectedNewRoute, setSelectedNewRoute] = useState('');
   const [newCapacity, setNewCapacity] = useState('');
   const [updatingAction, setUpdatingAction] = useState(false);
 
@@ -311,6 +312,39 @@ export const TripsPage: React.FC<TripsPageProps> = ({ onNotify }) => {
       fetchTrips();
     } catch (err: any) {
       onNotify(err.response?.data?.message || 'Failed to assign vehicle', 'error');
+    } finally {
+      setUpdatingAction(false);
+    }
+  };
+
+  // Open Route Modal
+  const handleOpenRouteModal = async () => {
+    if (!infoTrip) return;
+    if (routes.length === 0 && !isOwner) {
+      try {
+        const resp = await routesAPI.list({ limit: 100 });
+        setRoutes(resp.data.data || []);
+      } catch (err) {
+        console.error('Failed to load routes', err);
+      }
+    }
+    setSelectedNewRoute(infoTrip.route_id ? String(infoTrip.route_id) : '');
+    setActionModal('route');
+  };
+
+  // Change route
+  const handleApplyRoute = async () => {
+    if (!infoTrip || !selectedNewRoute) return;
+    setUpdatingAction(true);
+    try {
+      const response = await tripsAPI.assignRoute(infoTrip.id, parseInt(selectedNewRoute));
+      onNotify(response.data.message || 'Route reassigned successfully');
+      const updatedTrip = await tripsAPI.show(infoTrip.id);
+      setInfoTrip(updatedTrip.data.data);
+      setActionModal(null);
+      fetchTrips();
+    } catch (err: any) {
+      onNotify(err.response?.data?.message || 'Failed to assign route', 'error');
     } finally {
       setUpdatingAction(false);
     }
@@ -812,6 +846,13 @@ export const TripsPage: React.FC<TripsPageProps> = ({ onNotify }) => {
                     <Truck size={14} className="inline mr-1" />
                     Change Vehicle
                   </button>}
+                  {!isOwner && <button
+                    onClick={handleOpenRouteModal}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-700 hover:bg-indigo-800 text-white shadow-sm transition-colors"
+                  >
+                    <MapPin size={14} className="inline mr-1" />
+                    Change Route
+                  </button>}
                   <button
                     onClick={() => setInfoTrip(null)}
                     className="w-7 h-7 rounded-full border border-slate-300 dark:border-slate-700 flex items-center justify-center text-slate-500 hover:text-slate-800 dark:hover:text-white"
@@ -856,10 +897,27 @@ export const TripsPage: React.FC<TripsPageProps> = ({ onNotify }) => {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
                 <div className="space-y-3.5 text-xs">
                   <div>
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">ROUTE</span>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">ROUTE</span>
+                      {!isOwner && (
+                        <button
+                          type="button"
+                          onClick={handleOpenRouteModal}
+                          className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 hover:underline flex items-center gap-1"
+                        >
+                          <Edit2 size={11} />
+                          Change Route
+                        </button>
+                      )}
+                    </div>
                     <div className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">
                       {infoTrip.route?.route_name || 'No route assigned'}
                     </div>
+                    {infoTrip.route && (
+                      <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        {infoTrip.route.origin_city} &rarr; {infoTrip.route.destination_city}
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
@@ -1148,6 +1206,95 @@ export const TripsPage: React.FC<TripsPageProps> = ({ onNotify }) => {
             <div className="flex justify-end gap-3 pt-4 border-t border-slate-200 dark:border-slate-800">
               <Button size="sm" variant="ghost" onClick={() => setActionModal(null)}>Cancel</Button>
               <Button size="sm" onClick={handleApplyVehicle} loading={updatingAction} disabled={!selectedNewVehicle} className="bg-purple-600 hover:bg-purple-700">Confirm Vehicle</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sub-Modal: Change Route */}
+      {actionModal === 'route' && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-lg bg-white dark:bg-slate-900 border-2 border-indigo-500 dark:border-indigo-400 rounded-2xl shadow-2xl p-6 space-y-5 animate-in zoom-in duration-200">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <MapPin size={20} className="text-indigo-600 dark:text-indigo-400" />
+                Assign New Route
+              </h3>
+              <button onClick={() => setActionModal(null)} className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-500 hover:text-slate-800 dark:hover:text-white">
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Current Route info */}
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 text-xs space-y-1">
+              <div className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Current Assigned Route</div>
+              <div className="font-semibold text-slate-900 dark:text-white text-sm">
+                {infoTrip.route?.route_name || 'No route assigned'}
+              </div>
+              {infoTrip.route && (
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {infoTrip.route.origin_city} &rarr; {infoTrip.route.destination_city}
+                  {infoTrip.route.stops?.length ? ` • ${infoTrip.route.stops.length} stops` : ''}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-2">Select New Route</label>
+              <select
+                value={selectedNewRoute}
+                onChange={(e) => setSelectedNewRoute(e.target.value)}
+                className="w-full px-4 py-3 text-sm bg-slate-50 dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+              >
+                <option value="">{routes.length ? 'Select a route' : 'No routes found'}</option>
+                {routes.map(r => (
+                  <option key={r.id} value={r.id}>
+                    {r.route_name || r.name} {r.origin_city && r.destination_city ? `(${r.origin_city} → ${r.destination_city})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {selectedNewRoute && Number(selectedNewRoute) !== Number(infoTrip.route_id) && (
+              (() => {
+                const selRoute = routes.find(r => String(r.id) === String(selectedNewRoute));
+                return selRoute ? (
+                  <div className="p-3 bg-indigo-50/80 dark:bg-indigo-950/40 rounded-xl border border-indigo-200 dark:border-indigo-800 text-xs space-y-1 text-indigo-950 dark:text-indigo-200">
+                    <div className="font-bold flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-indigo-600 dark:bg-indigo-400"></span>
+                      New Selection Preview:
+                    </div>
+                    <div className="font-semibold">{selRoute.route_name || selRoute.name}</div>
+                    <div className="text-[11px] text-indigo-700 dark:text-indigo-300">
+                      {selRoute.origin_city} &rarr; {selRoute.destination_city}
+                      {selRoute.stops_count ? ` • ${selRoute.stops_count} stops` : ''}
+                      {selRoute.total_distance ? ` • ${selRoute.total_distance} km` : ''}
+                    </div>
+                  </div>
+                ) : null;
+              })()
+            )}
+
+            {tripBookings.length > 0 && (
+              <div className="flex items-start gap-2 p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl text-amber-800 dark:text-amber-200 text-xs">
+                <AlertCircle size={16} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                <div>
+                  <strong>Notice:</strong> This trip currently has {tripBookings.length} active booking(s). Reassigning the route will update the trip's route stops and road map.
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3 pt-4 border-t border-slate-200 dark:border-slate-800">
+              <Button size="sm" variant="ghost" onClick={() => setActionModal(null)}>Cancel</Button>
+              <Button
+                size="sm"
+                onClick={handleApplyRoute}
+                loading={updatingAction}
+                disabled={!selectedNewRoute || Number(selectedNewRoute) === Number(infoTrip.route_id)}
+                className="bg-indigo-600 hover:bg-indigo-700"
+              >
+                Confirm Route
+              </Button>
             </div>
           </div>
         </div>

@@ -355,6 +355,23 @@ exports.show = async (req, res, next) => {
       || 40
     );
     item.booked_seats = bookingSum !== null && !isNaN(bookingSum) ? Number(bookingSum) : Number(item.booked_seats || 0);
+    if (item.route && (!item.route.stops || item.route.stops.length === 0)) {
+      const { RouteStop } = require('../models');
+      const routeStops = await RouteStop.findAll({
+        where: { route_id: item.route.id },
+        include: [{ model: Stop, as: 'stop' }],
+        order: [['stop_sequence', 'ASC']],
+      });
+      if (routeStops && routeStops.length > 0) {
+        item.route.stops = routeStops.map((rs) => ({
+          id: rs.stop?.id,
+          stop_name: rs.stop?.stop_name,
+          latitude: rs.stop?.latitude,
+          longitude: rs.stop?.longitude,
+          stop_sequence: rs.stop_sequence,
+        }));
+      }
+    }
     res.json({ success: true, data: { ...item, bookings_count: bookingsCount } });
   } catch (err) {
     next(err);
@@ -860,6 +877,53 @@ exports.assignVehicle = async (req, res, next) => {
     }
     await trip.update(payload);
     res.json({ success: true, message: 'Vehicle assigned', data: { trip_id: trip.id, vehicle_id, bus_type_id: payload.bus_type_id || trip.bus_type_id } });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── Assign Route ───────────────────────────────────────────
+exports.assignRoute = async (req, res, next) => {
+  try {
+    if (!requireOwnerBookingAccess(req, res)) return;
+    if (isOwnerRole(req)) return res.status(403).json({ success: false, message: 'Owners cannot change trip route' });
+    const trip = await Trip.findByPk(req.params.id);
+    if (!trip) return res.status(404).json({ success: false, message: 'Trip not found' });
+    const { route_id } = req.body;
+    if (!route_id) return res.status(400).json({ success: false, message: 'Route ID is required' });
+    const route = await Route.findByPk(route_id);
+    if (!route) return res.status(404).json({ success: false, message: 'Route not found' });
+
+    const oldRouteId = trip.route_id;
+    await trip.update({ route_id: parseInt(route_id) });
+
+    const bookingsCount = await Booking.count({
+      where: {
+        trip_id: trip.id,
+        status: { [Op.notIn]: ['Cancelled', 'cancelled', 'CANCELLED'] },
+      },
+    });
+
+    await logAction({
+      userId: req.user?.id,
+      userType: req.user?.role?.name,
+      userName: req.user?.name,
+      action: 'update',
+      module: 'trips',
+      entityType: 'Trip',
+      entityId: trip.id,
+      newValues: { old_route_id: oldRouteId, new_route_id: parseInt(route_id) },
+      ipAddress: req.ip,
+      description: `Reassigned route for trip #${trip.id} to '${route.route_name}' (${route.origin_city} -> ${route.destination_city})`,
+    });
+
+    res.json({
+      success: true,
+      message: bookingsCount > 0
+        ? `Route reassigned to ${route.route_name}. Notice: ${bookingsCount} active booking(s) exist on this trip.`
+        : `Route reassigned to ${route.route_name} successfully`,
+      data: { trip_id: trip.id, route_id: parseInt(route_id), route_name: route.route_name },
+    });
   } catch (err) {
     next(err);
   }

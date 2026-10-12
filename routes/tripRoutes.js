@@ -23,5 +23,6 @@ router.delete('/:id', requirePermission('trips.manage'), tripController.destroy)
 router.patch('/:id/status', requirePermission('trips.manage'), tripController.updateStatus);
 router.patch('/:id/assign-driver', requirePermission('trips.manage'), requireOwnerBookingAccess, tripController.assignDriver);
 router.patch('/:id/assign-vehicle', requirePermission('trips.manage'), requireOwnerBookingAccess, tripController.assignVehicle);
+router.patch('/:id/assign-route', requirePermission('trips.manage'), requireOwnerBookingAccess, tripController.assignRoute);
 router.post('/generate-future', requirePermission('trips.manage'), tripController.generateFutureTrips);
 module.exports = router;

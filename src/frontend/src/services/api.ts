@@ -158,6 +158,7 @@ export const tripsAPI = {
   updateStatus: (id: number, status: string) => api.patch(`/trips/${id}/status`, { status }),
   assignDriver: (id: number, driver_id: number) => api.patch(`/trips/${id}/assign-driver`, { driver_id }),
   assignVehicle: (id: number, vehicle_id: number) => api.patch(`/trips/${id}/assign-vehicle`, { vehicle_id }),
+  assignRoute: (id: number, route_id: number) => api.patch(`/trips/${id}/assign-route`, { route_id }),
   generateFuture: (data?: object) => api.post('/trips/generate-future', data || {}),
 };
 
