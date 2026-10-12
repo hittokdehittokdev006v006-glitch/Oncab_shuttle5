@@ -5,10 +5,10 @@ const { Route, Stop, BusRoute, BusStop, SystemSetting } = require('../models');
 
 // Configuration parameters
 //   const eligibleStops = allStops.filter((stop) => (
-const BUS_STOP_SEARCH_RADIUS_KM = 1.0;
-const BUS_STOP_EXPANDED_RADIUS_KM = 3.0; // 3000m expanded radius
-const FUZZY_MATCH_THRESHOLD = 0.60; // Similarity score threshold (0.0 - 1.0)
-const DEFAULT_BUS_STOP_SEARCH_RADIUS_KM = 1.0;
+const BUS_STOP_SEARCH_RADIUS_KM = 5.0;
+const BUS_STOP_EXPANDED_RADIUS_KM = 7.0; // 3000m expanded radius
+const FUZZY_MATCH_THRESHOLD = 2; // Similarity score threshold (0.0 - 1.0)
+const DEFAULT_BUS_STOP_SEARCH_RADIUS_KM = 5.0;
 
 const getConfiguredSearchRadiusKm = async () => {
   try {
