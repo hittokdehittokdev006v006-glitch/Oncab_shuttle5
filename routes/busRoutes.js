@@ -6,6 +6,7 @@ const busController = require('../controllers/busController');
 const payuController = require('../controllers/payuController');
 const walletController = require('../controllers/walletController');
 const couponController = require('../controllers/couponController');
+const refundController = require('../controllers/refundController');
 
 // ── Public Bus APIs (No Authentication Required) ───────────
 // These are for user-facing mobile app
@@ -46,6 +47,8 @@ router.post('/wallet/balance', walletController.balance);
 router.post('/wallet/transactions', walletController.transactions);
 router.get('/user-bookings', busController.getUserBookings);
 router.post('/user-bookings', busController.getUserBookings);
+router.get('/user-refunds', refundController.getUserRefunds);
+router.post('/user-refunds', refundController.getUserRefunds);
 
 // Booking Details for Boarding Pass
 router.get('/booking-details', busController.getBookingDetails);

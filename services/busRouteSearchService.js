@@ -5,8 +5,8 @@ const { Route, Stop, RouteStop, BusRoute, BusStop, BusSchedule, Trip, BusType, R
 const { syncRouteStopsTable } = require('../utils/routeStopMigrator');
 const { resolveFare } = require('../utils/fareCalculator');
 const {
-  calcHaversineDistanceKm,
   formatDistance,
+  getConfiguredSearchRadiusKm,
   resolveLocation,
   normalizeText,
 } = require('./busStopSearchService');
@@ -90,10 +90,23 @@ class BusRouteSearchService {
     const todayStr = new Date().toISOString().split('T')[0];
     const travelDate = travelDateInput || todayStr;
     const reqPassengers = parseInt(passengersInput || 1, 10);
+    const searchRadiusKm = await getConfiguredSearchRadiusKm();
+    const hasPickupCoordinates = pickupInput?.latitude != null && pickupInput?.longitude != null
+      && Number.isFinite(Number(pickupInput.latitude)) && Number.isFinite(Number(pickupInput.longitude));
+    const hasDropoffCoordinates = dropoffInput?.latitude != null && dropoffInput?.longitude != null
+      && Number.isFinite(Number(dropoffInput.latitude)) && Number.isFinite(Number(dropoffInput.longitude));
 
     // 1. Resolve Pickup & Dropoff Stop Candidates
-    const pickupCandidates = await resolveLocation(pickupInput, 'pickup');
-    const dropoffCandidates = await resolveLocation(dropoffInput, 'dropoff');
+    const pickupCandidates = await resolveLocation(pickupInput, 'pickup', {
+      radiusKm: searchRadiusKm,
+      strictCoordinates: hasPickupCoordinates,
+      allowExpandedRadius: !hasPickupCoordinates,
+    });
+    const dropoffCandidates = await resolveLocation(dropoffInput, 'dropoff', {
+      radiusKm: searchRadiusKm,
+      strictCoordinates: hasDropoffCoordinates,
+      allowExpandedRadius: !hasDropoffCoordinates,
+    });
 
     const topResolvedPickup = pickupCandidates.length > 0 ? pickupCandidates[0] : null;
     const topResolvedDropoff = dropoffCandidates.length > 0 ? dropoffCandidates[0] : null;
@@ -106,7 +119,8 @@ class BusRouteSearchService {
         reqPassengers,
         topResolvedPickup,
         topResolvedDropoff,
-        message: 'Could not resolve pickup or dropoff location',
+        searchRadiusKm,
+        message: 'Could not resolve pickup or dropoff within the configured OpenStreetMap road-distance radius',
       });
     }
 
@@ -206,44 +220,20 @@ class BusRouteSearchService {
     }
 
     // Extract user input coordinates if available
-    const userPLat = topResolvedPickup.latitude;
-    const userPLng = topResolvedPickup.longitude;
-    const userDLat = topResolvedDropoff.latitude;
-    const userDLng = topResolvedDropoff.longitude;
-
     // 3. Search Direct Candidate Routes
     const directCandidates = await this.findMatchingRoutes({
       routes,
-      pickupCandidates: [topResolvedPickup, ...pickupCandidates.slice(1, 4)],
-      dropoffCandidates: [topResolvedDropoff, ...dropoffCandidates.slice(1, 4)],
+      pickupCandidates,
+      dropoffCandidates,
       travelDate,
       reqPassengers,
       busTypeId,
-      userPLat,
-      userPLng,
-      userDLat,
-      userDLng,
+      hasPickupCoordinates,
+      hasDropoffCoordinates,
     });
 
-    // 4. Fallback Alternative Search (If no direct route, search expanded nearby stops)
-    let nearbyCandidates = [];
-    if (directCandidates.length === 0) {
-      nearbyCandidates = await this.findMatchingRoutes({
-        routes,
-        pickupCandidates,
-        dropoffCandidates,
-        travelDate,
-        reqPassengers,
-        busTypeId,
-        userPLat,
-        userPLng,
-        userDLat,
-        userDLng,
-        isNearbySearch: true,
-      });
-    }
-
-    const finalCandidates = directCandidates.length > 0 ? directCandidates : nearbyCandidates;
+    const nearbyCandidates = [];
+    const finalCandidates = directCandidates;
 
     return this.buildFormattedSearchResponse({
       pickupInput,
@@ -252,6 +242,7 @@ class BusRouteSearchService {
       reqPassengers,
       topResolvedPickup,
       topResolvedDropoff,
+      searchRadiusKm,
       directCandidates,
       nearbyCandidates,
       finalCandidates,
@@ -269,10 +260,8 @@ class BusRouteSearchService {
       travelDate,
       reqPassengers,
       busTypeId,
-      userPLat,
-      userPLng,
-      userDLat,
-      userDLng,
+      hasPickupCoordinates = false,
+      hasDropoffCoordinates = false,
     } = opts;
 
     const matchedResults = [];
@@ -287,6 +276,7 @@ class BusRouteSearchService {
       const matchingPickupStops = stops.filter((s) => {
         const sId = Number(s.id || s.stop_id);
         const nameNorm = normalizeText(s.stop_name || s.name);
+        if (hasPickupCoordinates) return pickupIds.has(sId);
         return (
           pickupIds.has(sId) ||
           pickupCandidates.some(
@@ -301,6 +291,7 @@ class BusRouteSearchService {
       const matchingDropoffStops = stops.filter((s) => {
         const sId = Number(s.id || s.stop_id);
         const nameNorm = normalizeText(s.stop_name || s.name);
+        if (hasDropoffCoordinates) return dropoffIds.has(sId);
         return (
           dropoffIds.has(sId) ||
           dropoffCandidates.some(
@@ -317,6 +308,11 @@ class BusRouteSearchService {
         const pSeq = Number(pStop.stop_sequence || 1);
         for (const dStop of matchingDropoffStops) {
           const dSeq = Number(dStop.stop_sequence || 2);
+
+          const pickupCandidate = pickupCandidates.find((candidate) => Number(candidate.id || candidate.stop_id) === Number(pStop.id || pStop.stop_id));
+          const dropoffCandidate = dropoffCandidates.find((candidate) => Number(candidate.id || candidate.stop_id) === Number(dStop.id || dStop.stop_id));
+          if (hasPickupCoordinates && !pickupCandidate) continue;
+          if (hasDropoffCoordinates && !dropoffCandidate) continue;
 
           if (pSeq < dSeq && Number(pStop.id || pStop.stop_id) !== Number(dStop.id || dStop.stop_id)) {
             validPair = { pickupStop: pStop, dropStop: dStop };
@@ -342,36 +338,10 @@ class BusRouteSearchService {
 
       if (!scheduleRes.success || scheduleRes.schedules.length === 0) continue;
 
-      const userPLatActual = userPLat != null ? userPLat : (pickupCandidates[0]?.latitude != null ? pickupCandidates[0].latitude : null);
-      const userPLngActual = userPLng != null ? userPLng : (pickupCandidates[0]?.longitude != null ? pickupCandidates[0].longitude : null);
-      const userDLatActual = userDLat != null ? userDLat : (dropoffCandidates[0]?.latitude != null ? dropoffCandidates[0].latitude : null);
-      const userDLngActual = userDLng != null ? userDLng : (dropoffCandidates[0]?.longitude != null ? dropoffCandidates[0].longitude : null);
-
-      let pDistKm = (userPLatActual != null && userPLngActual != null && pickupStop.latitude != null && pickupStop.longitude != null)
-        ? calcHaversineDistanceKm(userPLatActual, userPLngActual, pickupStop.latitude, pickupStop.longitude)
-        : 0;
-
-      let dDistKm = (userDLatActual != null && userDLngActual != null && dropStop.latitude != null && dropStop.longitude != null)
-        ? calcHaversineDistanceKm(userDLatActual, userDLngActual, dropStop.latitude, dropStop.longitude)
-        : 0;
-
-      if ((pDistKm === 0 || pDistKm === Infinity) && pickupCandidates.length > 0) {
-        const matchCand = pickupCandidates.find((c) => Number(c.id || c.stop_id) === Number(pickupStop.id || pickupStop.stop_id) || (c.name && normalizeText(c.name) === normalizeText(pickupStop.stop_name || pickupStop.name)));
-        if (matchCand && matchCand.distance) {
-          pDistKm = matchCand.distance / 1000;
-        } else if (pickupCandidates[0]?.distance) {
-          pDistKm = pickupCandidates[0].distance / 1000;
-        }
-      }
-
-      if ((dDistKm === 0 || dDistKm === Infinity) && dropoffCandidates.length > 0) {
-        const matchCand = dropoffCandidates.find((c) => Number(c.id || c.stop_id) === Number(dropStop.id || dropStop.stop_id) || (c.name && normalizeText(c.name) === normalizeText(dropStop.stop_name || dropStop.name)));
-        if (matchCand && matchCand.distance) {
-          dDistKm = matchCand.distance / 1000;
-        } else if (dropoffCandidates[0]?.distance) {
-          dDistKm = dropoffCandidates[0].distance / 1000;
-        }
-      }
+      const pickupCandidate = pickupCandidates.find((candidate) => Number(candidate.id || candidate.stop_id) === Number(pickupStop.id || pickupStop.stop_id));
+      const dropoffCandidate = dropoffCandidates.find((candidate) => Number(candidate.id || candidate.stop_id) === Number(dropStop.id || dropStop.stop_id));
+      const pDistKm = Number(pickupCandidate?.distance || 0) / 1000;
+      const dDistKm = Number(dropoffCandidate?.distance || 0) / 1000;
 
       matchedResults.push({
         route,
@@ -463,7 +433,7 @@ class BusRouteSearchService {
     const tripDurationMins = Math.max(5, dropOffsetMins - pickupOffsetMins);
 
     // Calculate fare for pickup and dropoff stop pair
-    let fareAmount = 49;
+    let fareAmount = 85;
     try {
       const pStopId = Number(pickupStop.id || pickupStop.stop_id);
       const dStopId = Number(dropStop.id || dropStop.stop_id);
@@ -551,7 +521,7 @@ class BusRouteSearchService {
    * Format empty search response
    */
   static formatNoRoutesResponse(opts) {
-    const { pickupInput, dropoffInput, travelDate, reqPassengers, topResolvedPickup, topResolvedDropoff, message } = opts;
+    const { pickupInput, dropoffInput, travelDate, reqPassengers, topResolvedPickup, topResolvedDropoff, searchRadiusKm, message } = opts;
     return {
       success: true,
       message: message || 'No direct routes found',
@@ -560,6 +530,7 @@ class BusRouteSearchService {
         dropoff: typeof dropoffInput === 'string' ? dropoffInput : dropoffInput?.name || 'Dropoff',
         date: travelDate,
         passengers: reqPassengers,
+        search_radius_km: searchRadiusKm,
       },
       resolved_pickup: topResolvedPickup ? {
         stop_id: topResolvedPickup.id,
@@ -577,6 +548,7 @@ class BusRouteSearchService {
       direct_routes: [],
       nearby_routes: [],
       top_pick: null,
+      reason: !topResolvedPickup ? 'PICKUP_OUTSIDE_SEARCH_RADIUS' : !topResolvedDropoff ? 'DROPOFF_OUTSIDE_SEARCH_RADIUS' : 'NO_ROUTE_OR_SCHEDULE_MATCH',
       pickup_groups: [],
       all_timings: [],
       available_dates: [],
@@ -595,6 +567,7 @@ class BusRouteSearchService {
       reqPassengers,
       topResolvedPickup,
       topResolvedDropoff,
+      searchRadiusKm,
       directCandidates,
       nearbyCandidates,
       finalCandidates,
@@ -768,28 +741,26 @@ class BusRouteSearchService {
     const msg = isDirect
       ? 'Routes found successfully'
       : (nearbyCandidates.length > 0 ? 'No direct route found. Nearby routes available.' : 'No routes found');
+    const resolvedPickup = finalCandidates[0]
+      ? { stop_id: Number(finalCandidates[0].pickupStop.id), name: finalCandidates[0].pickupStop.stop_name || finalCandidates[0].pickupStop.name, matched_by: 'osm_road_distance', distance: Math.round(finalCandidates[0].pickupDistKm * 1000) }
+      : topResolvedPickup ? { stop_id: topResolvedPickup.id, name: topResolvedPickup.name, matched_by: topResolvedPickup.matched_by, distance: topResolvedPickup.distance } : null;
+    const resolvedDropoff = finalCandidates[0]
+      ? { stop_id: Number(finalCandidates[0].dropStop.id), name: finalCandidates[0].dropStop.stop_name || finalCandidates[0].dropStop.name, matched_by: 'osm_road_distance', distance: Math.round(finalCandidates[0].dropDistKm * 1000) }
+      : topResolvedDropoff ? { stop_id: topResolvedDropoff.id, name: topResolvedDropoff.name, matched_by: topResolvedDropoff.matched_by, distance: topResolvedDropoff.distance } : null;
 
     return {
       success: true,
       message: msg,
+      reason: finalCandidates.length === 0 ? 'NO_ROUTE_OR_SCHEDULE_MATCH' : (isDirect ? 'DIRECT_MATCH' : 'NEARBY_MATCH'),
       search: {
         pickup: pickupStr,
         dropoff: dropoffStr,
         date: travelDate,
         passengers: reqPassengers,
+        search_radius_km: searchRadiusKm,
       },
-      resolved_pickup: topResolvedPickup ? {
-        stop_id: topResolvedPickup.id,
-        name: topResolvedPickup.name,
-        matched_by: topResolvedPickup.matched_by,
-        distance: topResolvedPickup.distance,
-      } : null,
-      resolved_dropoff: topResolvedDropoff ? {
-        stop_id: topResolvedDropoff.id,
-        name: topResolvedDropoff.name,
-        matched_by: topResolvedDropoff.matched_by,
-        distance: topResolvedDropoff.distance,
-      } : null,
+      resolved_pickup: resolvedPickup,
+      resolved_dropoff: resolvedDropoff,
       routes: routesFormatted,
       direct_routes: isDirect ? routesFormatted : [],
       nearby_routes: !isDirect ? routesFormatted : [],

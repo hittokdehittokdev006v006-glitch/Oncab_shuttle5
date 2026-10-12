@@ -16,6 +16,43 @@ const buildPagination = (page, limit) => {
   return { offset: (p - 1) * l, limit: l, page: p };
 };
 
+const getEtaMinutesToPickup = async ({ driverDetail = {}, originStop = {} }) => {
+  const driverLat = driverDetail.latitude != null && driverDetail.latitude !== '' ? Number(driverDetail.latitude) : null;
+  const driverLng = driverDetail.longitude != null && driverDetail.longitude !== '' ? Number(driverDetail.longitude) : null;
+  const stopLat = originStop.latitude != null && originStop.latitude !== '' ? Number(originStop.latitude) : null;
+  const stopLng = originStop.longitude != null && originStop.longitude !== '' ? Number(originStop.longitude) : null;
+
+  if (driverLat == null || driverLng == null || stopLat == null || stopLng == null) return null;
+  if (!Number.isFinite(driverLat) || !Number.isFinite(driverLng) || !Number.isFinite(stopLat) || !Number.isFinite(stopLng)) return null;
+  if (Math.abs(driverLat) > 90 || Math.abs(stopLat) > 90 || Math.abs(driverLng) > 180 || Math.abs(stopLng) > 180) return null;
+
+  try {
+    const routingBaseUrl = process.env.OSRM_BASE_URL || 'https://router.project-osrm.org';
+    const routeUrl = new URL(
+      `/route/v1/driving/${driverLng},${driverLat};${stopLng},${stopLat}`,
+      routingBaseUrl
+    );
+    routeUrl.searchParams.set('overview', 'false');
+    routeUrl.searchParams.set('alternatives', 'false');
+    routeUrl.searchParams.set('steps', 'false');
+
+    const response = await fetch(routeUrl, { signal: AbortSignal.timeout(5000) });
+    if (!response.ok) return null;
+
+    const result = await response.json();
+    const route = result.code === 'Ok' ? result.routes?.[0] : null;
+    if (!route || !Number.isFinite(Number(route.duration)) || !Number.isFinite(Number(route.distance))) return null;
+
+    return {
+      distance_meters: Number(route.distance),
+      eta_minutes: Math.max(0, Number(route.duration) / 60),
+      eta_source: 'openstreetmap_osrm_road_route',
+    };
+  } catch (err) {
+    return null;
+  }
+};
+
 const isDateKeyEnabled = (value) => value === true || value === 1 || ['true', '1'].includes(String(value).toLowerCase());
 
 const groupSchedulesByTripDate = (schedules) => schedules.reduce((grouped, schedule) => {
@@ -298,7 +335,7 @@ const fetchSchedulesForRouteStopPair = async ({ routeId, pickupStopId, dropStopI
   const isToday = searchDateStr === todayStr;
   const currentMinsFromMidnight = now.getHours() * 60 + now.getMinutes();
 
-  let fareAmount = 49;
+  let fareAmount = 85;
   try {
     const stopPairRate = await RateChart.findOne({
       where: {
@@ -318,7 +355,7 @@ const fetchSchedulesForRouteStopPair = async ({ routeId, pickupStopId, dropStopI
       }
     }
   } catch (e) {
-    fareAmount = 49;
+    fareAmount = 85;
   }
 
   const totalStops = Math.max(2, stops.length);
@@ -510,6 +547,9 @@ exports.getSchedules = async (req, res, next) => {
     const requestedTravelDate = req.query?.date || req.body?.date || req.query?.travel_date || req.body?.travel_date;
     const today = new Date();
     const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const windowEndDate = new Date(`${todayStr}T00:00:00`);
+    windowEndDate.setDate(windowEndDate.getDate() + 6);
+    const windowEndStr = `${windowEndDate.getFullYear()}-${String(windowEndDate.getMonth() + 1).padStart(2, '0')}-${String(windowEndDate.getDate()).padStart(2, '0')}`;
     const travel_date = requestedTravelDate || todayStr;
     const passengers = parseInt(req.query?.passengers || req.body?.passengers || 1, 10);
     const dateKeyEnabled = isDateKeyEnabled(req.query?.date_key ?? req.body?.date_key);
@@ -520,12 +560,12 @@ exports.getSchedules = async (req, res, next) => {
         const [datedSchedules, datedTrips] = await Promise.all([
           BusSchedule.findAll({
             attributes: ['trip_date'],
-            where: { route_id, status: 'Active', trip_date: { [Op.gte]: todayStr } },
+            where: { route_id, status: 'Active', trip_date: { [Op.between]: [todayStr, windowEndStr] } },
             raw: true,
           }),
           Trip.findAll({
             attributes: ['trip_date'],
-            where: { route_id, status: { [Op.in]: ['Active', 'Scheduled'] }, trip_date: { [Op.gte]: todayStr } },
+            where: { route_id, status: { [Op.in]: ['Active', 'Scheduled'] }, trip_date: { [Op.between]: [todayStr, windowEndStr] } },
             raw: true,
           }),
         ]);
@@ -590,8 +630,7 @@ exports.getSchedules = async (req, res, next) => {
     if (rawTravelDate) {
       where.trip_date = rawTravelDate;
     } else {
-      const todayStr = new Date().toISOString().split('T')[0];
-      where.trip_date = { [Op.gte]: todayStr };
+      where.trip_date = { [Op.between]: [todayStr, windowEndStr] };
     }
 
     let schedules = await BusSchedule.findAll({
@@ -613,8 +652,7 @@ exports.getSchedules = async (req, res, next) => {
       if (rawTravelDate) {
         tripWhere.trip_date = rawTravelDate;
       } else {
-        const todayStr = new Date().toISOString().split('T')[0];
-        tripWhere.trip_date = { [Op.gte]: todayStr };
+        tripWhere.trip_date = { [Op.between]: [todayStr, windowEndStr] };
       }
 
       schedules = await Trip.findAll({
@@ -629,7 +667,7 @@ exports.getSchedules = async (req, res, next) => {
     }
 
     // If no travel_date was passed and no future schedules exist, fetch latest active/scheduled trips
-    if ((!schedules || schedules.length === 0) && !rawTravelDate) {
+    if ((!schedules || schedules.length === 0) && !rawTravelDate && !dateKeyEnabled) {
       const fallbackWhere = {};
       if (route_id) fallbackWhere.route_id = route_id;
       if (bus_type_id) fallbackWhere.bus_type_id = bus_type_id;
@@ -1248,18 +1286,18 @@ exports.cancelUserBooking = async (req, res, next) => {
 
     const isAdmin = req.user && (req.user.role || req.user.role_id);
     if (!isAdmin) {
-      const createdAt = new Date(booking.created_at || booking.createdAt);
-      const now = new Date();
-      if (!isNaN(createdAt.getTime())) {
-        const minutesSinceBooking = (now.getTime() - createdAt.getTime()) / (1000 * 60);
-        if (minutesSinceBooking > 30) {
-          await t.rollback();
-          return res.status(400).json({
-            status: 400,
-            success: false,
-            message: 'Booking cannot be cancelled after 30 minutes of booking creation',
-          });
-        }
+      const trip = await Trip.findByPk(booking.trip_id, { transaction: t });
+      const originStop = booking.origin_stop_id ? await Stop.findByPk(booking.origin_stop_id, { transaction: t }) : null;
+      const driverDetail = trip && trip.driver_id ? await DriverDetail.findOne({ where: { driver_id: trip.driver_id }, transaction: t }) : null;
+      const etaInfo = await getEtaMinutesToPickup({ driverDetail: driverDetail || {}, originStop: originStop || {} });
+      if (!etaInfo || etaInfo.eta_minutes <= 30) {
+        await t.rollback();
+        return res.status(400).json({
+          status: 400,
+          success: false,
+          message: etaInfo ? 'Cancellation is allowed only when the road-route ETA to your pickup stop is more than 30 minutes.' : 'Cancellation is blocked because a live road-route ETA to your pickup stop is not available.',
+          data: etaInfo ? { eta_minutes: Math.round(etaInfo.eta_minutes), distance_meters: Math.round(etaInfo.distance_meters) } : null,
+        });
       }
     }
 
@@ -1345,9 +1383,9 @@ exports.createBooking = async (req, res, next) => {
       special_requests
     } = body;
 
-    const targetTripId = trip_id || schedule_id;
+    const tripIdsToTry = [...new Set([trip_id, schedule_id].filter((id) => id != null && id !== ''))];
 
-    if (!targetTripId) {
+    if (tripIdsToTry.length === 0) {
       await t.rollback();
       return res.status(400).json({ status: 400, success: false, message: 'trip_id or schedule_id is required' });
     }
@@ -1376,36 +1414,78 @@ exports.createBooking = async (req, res, next) => {
       return res.status(403).json({ status: 403, success: false, message: 'Passenger account is not active' });
     }
 
-    let trip = await Trip.findByPk(targetTripId, {
-      include: [
-        { model: Vehicle, as: 'vehicle', required: false },
-        { model: BusType, as: 'bus_type', required: false },
-      ],
-      transaction: t,
-    });
-    if (!trip) {
-      const schedule = await BusSchedule.findByPk(targetTripId, {
+    const requestedTravelDate = travel_date ? String(travel_date).slice(0, 10) : null;
+    let trip = null;
+    let dateMismatchTrip = null;
+    for (const candidateTripId of tripIdsToTry) {
+      const candidateTrip = await Trip.findByPk(candidateTripId, {
         include: [
           { model: Vehicle, as: 'vehicle', required: false },
           { model: BusType, as: 'bus_type', required: false },
         ],
         transaction: t,
       });
-      if (schedule) {
-        trip = await Trip.findOne({
-          where: { schedule_code: schedule.schedule_code, trip_date: travel_date || schedule.trip_date },
-          include: [
-            { model: Vehicle, as: 'vehicle', required: false },
-            { model: BusType, as: 'bus_type', required: false },
-          ],
-          transaction: t
-        });
+      if (candidateTrip && requestedTravelDate && candidateTrip.trip_date
+        && String(candidateTrip.trip_date).slice(0, 10) !== requestedTravelDate) {
+        dateMismatchTrip = candidateTrip;
+        continue;
       }
+      trip = candidateTrip;
+      if (trip) break;
     }
 
     if (!trip) {
       await t.rollback();
+      if (dateMismatchTrip) {
+        return res.status(409).json({
+          status: 409,
+          success: false,
+          message: 'Selected trip is scheduled for a different travel date',
+          data: { trip_id: dateMismatchTrip.id, trip_date: dateMismatchTrip.trip_date, requested_travel_date: requestedTravelDate },
+        });
+      }
       return res.status(404).json({ status: 404, success: false, message: 'Trip not found' });
+    }
+
+    if (!['Scheduled', 'Active'].includes(String(trip.status))) {
+      await t.rollback();
+      return res.status(409).json({
+        status: 409,
+        success: false,
+        message: 'Only Scheduled or Active trips can be booked',
+        data: { trip_id: trip.id, trip_status: trip.status },
+      });
+    }
+
+    const selectedStopIds = [...new Set([origin_stop_id, destination_stop_id]
+      .filter((stopId) => stopId != null && stopId !== '')
+      .map(Number))];
+    if (selectedStopIds.length) {
+      const [selectedStops, routeStopLinks] = await Promise.all([
+        Stop.findAll({ where: { id: { [Op.in]: selectedStopIds } }, attributes: ['id', 'route_id'], transaction: t }),
+        RouteStop.findAll({
+          where: { route_id: trip.route_id, stop_id: { [Op.in]: selectedStopIds }, status: 'Active' },
+          attributes: ['stop_id'],
+          transaction: t,
+          raw: true,
+        }),
+      ]);
+      const linkedStopIds = new Set(routeStopLinks.map((link) => Number(link.stop_id)));
+      const stopsById = new Map(selectedStops.map((stop) => [Number(stop.id), stop]));
+      const invalidStopIds = selectedStopIds.filter((stopId) => {
+        const stop = stopsById.get(stopId);
+        return !stop || (Number(stop.route_id) !== Number(trip.route_id) && !linkedStopIds.has(stopId));
+      });
+      if (invalidStopIds.length) {
+        await t.rollback();
+        return res.status(400).json({
+          status: 400,
+          success: false,
+          message: 'Pickup and destination stops must belong to the selected trip route',
+          code: 'STOP_NOT_ON_TRIP_ROUTE',
+          data: { trip_id: trip.id, route_id: trip.route_id, invalid_stop_ids: invalidStopIds },
+        });
+      }
     }
 
     const rawSeatInput = seat_numbers || body.seat_number || body.seats;
@@ -1630,18 +1710,18 @@ exports.cancelBooking = async (req, res, next) => {
 
     const isAdmin = req.user && (req.user.role || req.user.role_id);
     if (!isAdmin) {
-      const createdAt = new Date(booking.created_at || booking.createdAt);
-      const now = new Date();
-      if (!isNaN(createdAt.getTime())) {
-        const minutesSinceBooking = (now.getTime() - createdAt.getTime()) / (1000 * 60);
-        if (minutesSinceBooking > 30) {
-          await t.rollback();
-          return res.status(400).json({
-            status: 400,
-            success: false,
-            message: 'Booking cannot be cancelled after 30 minutes of booking creation',
-          });
-        }
+      const trip = await Trip.findByPk(booking.trip_id, { transaction: t });
+      const originStop = booking.origin_stop_id ? await Stop.findByPk(booking.origin_stop_id, { transaction: t }) : null;
+      const driverDetail = trip && trip.driver_id ? await DriverDetail.findOne({ where: { driver_id: trip.driver_id }, transaction: t }) : null;
+      const etaInfo = await getEtaMinutesToPickup({ driverDetail: driverDetail || {}, originStop: originStop || {} });
+      if (!etaInfo || etaInfo.eta_minutes <= 30) {
+        await t.rollback();
+        return res.status(400).json({
+          status: 400,
+          success: false,
+          message: etaInfo ? 'Cancellation is allowed only when the road-route ETA to your pickup stop is more than 30 minutes.' : 'Cancellation is blocked because a live road-route ETA to your pickup stop is not available.',
+          data: etaInfo ? { eta_minutes: Math.round(etaInfo.eta_minutes), distance_meters: Math.round(etaInfo.distance_meters) } : null,
+        });
       }
     }
 
@@ -1665,49 +1745,27 @@ exports.cancelBooking = async (req, res, next) => {
       }
     }
 
-    // Process wallet refund / Refund record if payment was paid
+    // Record the refund request; only the admin refund flow submits it to PayU.
     let refundRecord = null;
-    let walletCredited = false;
-    let newWalletBalance = null;
 
     if (booking.payment_status === 'paid' && booking.final_amount > 0) {
-      const passenger = booking.passenger_id
-        ? await CustomerUser.findByPk(booking.passenger_id, { transaction: t })
-        : await CustomerUser.findOne({ where: { mobile: booking.passenger_mobile }, transaction: t });
-
+      const payment = await Payment.findOne({
+        where: { booking_id: booking.id, status: ['captured', 'partial_refund'] },
+        order: [['created_at', 'DESC']],
+        transaction: t,
+      });
       const refundRef = `REF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-
-      if (passenger) {
-        const currentBalance = parseFloat(passenger.wallet_balance || 0);
-        newWalletBalance = Math.round((currentBalance + parseFloat(booking.final_amount)) * 100) / 100;
-        await passenger.update({ wallet_balance: newWalletBalance }, { transaction: t });
-
-        await WalletTransaction.create({
-          passenger_id: passenger.id,
-          type: 'credit',
-          amount: booking.final_amount,
-          balance_after: newWalletBalance,
-          source: 'refund',
-          reference_type: 'booking',
-          reference_id: String(booking.id),
-          description: `Refund for cancelled booking ${booking.booking_reference}`,
-        }, { transaction: t });
-
-        walletCredited = true;
-      }
 
       refundRecord = await Refund.create({
         booking_id: booking.id,
-        passenger_id: passenger?.id || booking.passenger_id || null,
+        payment_id: payment?.id || null,
+        passenger_id: booking.passenger_id || null,
         refund_reference: refundRef,
         refund_amount: booking.final_amount,
         refund_reason: cancellation_reason,
-        refund_method: walletCredited ? 'wallet' : 'gateway',
-        status: walletCredited ? 'completed' : 'pending',
-        processed_at: walletCredited ? new Date() : null,
+        refund_method: payment?.payu_mihpayid ? 'payu' : null,
+        status: 'pending',
       }, { transaction: t });
-
-      await booking.update({ payment_status: walletCredited ? 'refunded' : 'refund_pending' }, { transaction: t });
     }
 
     await t.commit();
@@ -1715,17 +1773,20 @@ exports.cancelBooking = async (req, res, next) => {
     res.status(200).json({
       status: 200,
       success: true,
-      message: walletCredited
-        ? `Booking cancelled and ₹${booking.final_amount} refunded to wallet`
+      message: refundRecord
+        ? 'Booking cancelled. Refund request is pending admin processing through PayU.'
         : 'Booking cancelled successfully',
       data: {
         booking_id: booking.id,
         booking_reference: booking.booking_reference,
         booking_status: 'cancelled',
-        refund_amount: booking.final_amount,
-        refund_status: walletCredited ? 'completed' : (booking.final_amount > 0 ? 'pending' : 'none'),
-        refund_method: walletCredited ? 'wallet' : null,
-        ...(newWalletBalance !== null ? { wallet_balance: newWalletBalance } : {}),
+        refund: refundRecord ? {
+          refund_id: refundRecord.id,
+          refund_reference: refundRecord.refund_reference,
+          refund_amount: Number(refundRecord.refund_amount),
+          refund_status: refundRecord.status,
+          refund_method: refundRecord.refund_method,
+        } : null,
       },
     });
   } catch (err) {

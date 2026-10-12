@@ -1,6 +1,5 @@
 import React from 'react';
 import { View } from '../../types';
-import { useAuth } from '../../contexts/AuthContext';
 
 interface HeaderTabsProps {
   currentView: View;
@@ -20,12 +19,9 @@ const TABS: { id: View; label: string }[] = [
 ];
 
 export const HeaderTabs: React.FC<HeaderTabsProps> = ({ currentView, onSelectView }) => {
-  const { user } = useAuth();
-  const visibleTabs = TABS.filter((tab) => tab.id !== 'cancelled-tickets-refund' || user?.role?.name !== 'owner');
-
   return (
     <nav className="header-tabs" aria-label="Operator dashboard sections">
-      {visibleTabs.map((tab) => (
+      {TABS.map((tab) => (
         <button
           key={tab.id}
           className={currentView === tab.id ? 'active' : ''}

@@ -1,12 +1,26 @@
 'use strict';
 
 const { Op } = require('sequelize');
-const { Route, Stop, BusRoute, BusStop } = require('../models');
+const { Route, Stop, BusRoute, BusStop, SystemSetting } = require('../models');
 
 // Configuration parameters
-const BUS_STOP_SEARCH_RADIUS_KM = 1.0; // 1000m default radius
+//   const eligibleStops = allStops.filter((stop) => (
+const BUS_STOP_SEARCH_RADIUS_KM = 1.0;
 const BUS_STOP_EXPANDED_RADIUS_KM = 3.0; // 3000m expanded radius
 const FUZZY_MATCH_THRESHOLD = 0.60; // Similarity score threshold (0.0 - 1.0)
+const DEFAULT_BUS_STOP_SEARCH_RADIUS_KM = 1.0;
+
+const getConfiguredSearchRadiusKm = async () => {
+  try {
+    const setting = await SystemSetting.findOne({ where: { key: 'bus_stop_search_radius_km' } });
+    const configuredRadius = Number(setting?.value);
+    return Number.isFinite(configuredRadius) && configuredRadius > 0
+      ? configuredRadius
+      : DEFAULT_BUS_STOP_SEARCH_RADIUS_KM;
+  } catch (err) {
+    return DEFAULT_BUS_STOP_SEARCH_RADIUS_KM;
+  }
+};
 
 // Built-in Alias Dictionary mapping common synonyms/locations to registered stop names
 const STOP_ALIAS_DICTIONARY = {
@@ -120,6 +134,50 @@ const formatDistance = (distKm) => {
   }
 };
 
+const getRoadDistancesKm = async (origin, destinations) => {
+  const distancesByStopId = new Map();
+  const routingBaseUrl = process.env.OSRM_BASE_URL || 'https://router.project-osrm.org';
+
+  for (let start = 0; start < destinations.length; start += 90) {
+    const batch = destinations.slice(start, start + 90);
+    const coordinates = [origin, ...batch]
+      .map((point) => `${point.longitude},${point.latitude}`)
+      .join(';');
+    const url = new URL(`/table/v1/driving/${coordinates}`, routingBaseUrl);
+    url.searchParams.set('sources', '0');
+    url.searchParams.set('destinations', batch.map((_, index) => index + 1).join(';'));
+    url.searchParams.set('annotations', 'distance');
+
+    let result;
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error(`OSRM returned HTTP ${response.status}`);
+      result = await response.json();
+    } catch (err) {
+      const routingError = new Error('OpenStreetMap road-distance service is unavailable; configure OSRM_BASE_URL or retry later');
+      routingError.statusCode = 503;
+      routingError.code = 'OSM_ROUTING_UNAVAILABLE';
+      routingError.cause = err;
+      throw routingError;
+    }
+
+    if (result.code !== 'Ok' || !Array.isArray(result.distances?.[0])) {
+      const routingError = new Error(result.message || 'OpenStreetMap could not calculate road distances for the requested locations');
+      routingError.statusCode = 503;
+      routingError.code = 'OSM_ROUTING_UNAVAILABLE';
+      throw routingError;
+    }
+
+    result.distances[0].forEach((distanceMeters, index) => {
+      if (distanceMeters != null && Number.isFinite(Number(distanceMeters))) {
+        distancesByStopId.set(Number(batch[index].id), Number(distanceMeters) / 1000);
+      }
+    });
+  }
+
+  return distancesByStopId;
+};
+
 /**
  * Load all active stops from database
  */
@@ -157,9 +215,14 @@ const getAllActiveStops = async () => {
  * Location Resolver Pipeline:
  * Priority: 1. stop_id -> 2. GPS -> 3. Exact Name -> 4. Alias -> 5. Substring -> 6. Fuzzy -> 7. GPS Nearby
  */
-const resolveLocation = async (input, role = 'pickup') => {
+const resolveLocation = async (input, role = 'pickup', options = {}) => {
   const allStops = await getAllActiveStops();
   if (allStops.length === 0) return [];
+  const radiusKm = Number.isFinite(Number(options.radiusKm)) && Number(options.radiusKm) > 0
+    ? Number(options.radiusKm)
+    : await getConfiguredSearchRadiusKm();
+  const strictCoordinates = options.strictCoordinates === true;
+  const allowExpandedRadius = options.allowExpandedRadius !== false;
 
   let inputStopId = null;
   let inputName = '';
@@ -181,11 +244,176 @@ const resolveLocation = async (input, role = 'pickup') => {
     if (lng != null && !isNaN(parseFloat(lng))) inputLng = parseFloat(lng);
   }
 
+  const hasGps = inputLat !== null && inputLng !== null;
+  // if (strictCoordinates && hasGps) {
+  //   const eligibleStops = allStops.filter((stop) => (
+  //     (role === 'pickup' ? stop.pickup_allowed : stop.dropoff_allowed)
+  //     && Number.isFinite(stop.latitude)
+  //     && Number.isFinite(stop.longitude)
+  //   ));
+  //   const latDelta = radiusKm / 110.574;
+  //   const longitudeScale = Math.max(0.01, Math.cos((inputLat * Math.PI) / 180));
+  //   const lngDelta = radiusKm / (111.320 * longitudeScale);
+  //   const stopsInCoordinateBounds = eligibleStops.filter((stop) => (
+  //     Math.abs(stop.latitude - inputLat) <= latDelta
+  //     && Math.abs(stop.longitude - inputLng) <= lngDelta
+  //   ));
+
+  //   if (!stopsInCoordinateBounds.length) return [];
+
+  //   const roadDistances = await getRoadDistancesKm(
+  //     { latitude: inputLat, longitude: inputLng },
+  //     stopsInCoordinateBounds
+  //   );
+
+  //   return stopsInCoordinateBounds
+  //     .filter((stop) => roadDistances.has(Number(stop.id)) && roadDistances.get(Number(stop.id)) <= radiusKm)
+  //     .map((stop) => {
+  //       const distanceKm = roadDistances.get(Number(stop.id));
+  //       return {
+  //         ...stop,
+  //         matched_by: 'osm_road_distance',
+  //         confidence: Math.max(0.5, 1 - (distanceKm / radiusKm) * 0.4),
+  //         input_name: inputName,
+  //         matched_alias: null,
+  //         ...formatDistance(distanceKm),
+  //       };
+  //     })
+  //     .sort((a, b) => a.distance - b.distance || a.id - b.id);
+  // }
+
+  
+  if (strictCoordinates && hasGps) {
+    const eligibleStops = allStops.filter((stop) => (
+      (role === 'pickup' ? stop.pickup_allowed : stop.dropoff_allowed) &&
+      Number.isFinite(stop.latitude) &&
+      Number.isFinite(stop.longitude)
+    ));
+
+    const queryNorm = normalizeText(inputName);
+    const latDelta = radiusKm / 110.574;
+    const longitudeScale = Math.max(
+      0.01,
+      Math.cos((inputLat * Math.PI) / 180)
+    );
+    const lngDelta = radiusKm / (111.320 * longitudeScale);
+
+    const stopsInCoordinateBounds = eligibleStops.filter((stop) => (
+      Math.abs(stop.latitude - inputLat) <= latDelta &&
+      Math.abs(stop.longitude - inputLng) <= lngDelta
+    ));
+
+    if (!stopsInCoordinateBounds.length) return [];
+
+    const roadDistances = await getRoadDistancesKm(
+      { latitude: inputLat, longitude: inputLng },
+      stopsInCoordinateBounds
+    );
+
+    // Keep only stops that are within the configured road-distance radius.
+    const nearbyStops = stopsInCoordinateBounds
+      .filter((stop) => (
+        roadDistances.has(Number(stop.id)) &&
+        roadDistances.get(Number(stop.id)) <= radiusKm
+      ))
+      .map((stop) => {
+        const distanceKm = roadDistances.get(Number(stop.id));
+        const stopNameNorm = normalizeText(stop.name);
+        const landmarkNorm = normalizeText(stop.landmark);
+        const addressNorm = normalizeText(stop.address);
+
+        let matchedBy = 'osm_road_distance';
+        let confidence = Math.max(
+          0.5,
+          1 - (distanceKm / radiusKm) * 0.4
+        );
+
+        if (queryNorm && stopNameNorm === queryNorm) {
+          matchedBy = 'exact';
+          confidence = 1;
+        } else if (
+          queryNorm &&
+          STOP_ALIAS_DICTIONARY[stopNameNorm]
+            ?.map(normalizeText)
+            .includes(queryNorm)
+        ) {
+          matchedBy = 'alias';
+          confidence = 0.95;
+        } else if (
+          queryNorm &&
+          STOP_ALIAS_DICTIONARY[queryNorm]
+            ?.map(normalizeText)
+            .includes(stopNameNorm)
+        ) {
+          matchedBy = 'alias';
+          confidence = 0.95;
+        } else if (
+          queryNorm &&
+          stopNameNorm &&
+          (stopNameNorm.includes(queryNorm) ||
+           queryNorm.includes(stopNameNorm))
+        ) {
+          matchedBy = 'contains';
+          confidence = 0.85;
+        } else if (
+          queryNorm &&
+          ((landmarkNorm && landmarkNorm.includes(queryNorm)) ||
+           (addressNorm && addressNorm.includes(queryNorm)))
+        ) {
+          matchedBy = 'landmark';
+          confidence = 0.8;
+        }
+
+        return {
+          ...stop,
+          matched_by: matchedBy,
+          confidence,
+          input_name: inputName,
+          matched_alias: matchedBy === 'alias' ? inputName : null,
+          ...formatDistance(distanceKm),
+        };
+      });
+
+    // If a strong name match exists, do not substitute a different
+    // nearby stop just because its road distance is shorter.
+    const nameMatches = nearbyStops.filter((stop) =>
+      ['exact', 'alias', 'contains'].includes(stop.matched_by)
+    );
+
+    const candidates = nameMatches.length > 0
+      ? nameMatches
+      : nearbyStops;
+
+    const matchPriorityOrder = {
+      exact: 1,
+      alias: 2,
+      contains: 3,
+      landmark: 4,
+      osm_road_distance: 5,
+    };
+
+    return candidates.sort((a, b) => {
+      const priorityDiff =
+        (matchPriorityOrder[a.matched_by] || 99) -
+        (matchPriorityOrder[b.matched_by] || 99);
+
+      if (priorityDiff !== 0) return priorityDiff;
+      if (b.confidence !== a.confidence) {
+        return b.confidence - a.confidence;
+      }
+
+      return a.distance - b.distance || a.id - b.id;
+    });
+  }
+
+
   // 1. Priority: Explicit stop_id
   if (inputStopId) {
     const matchedById = allStops.filter((s) => s.id === inputStopId || s.stop_id === inputStopId);
     if (matchedById.length > 0) {
-      return matchedById.map((s) => {
+      return matchedById
+        .filter((s) => (role === 'pickup' ? s.pickup_allowed : s.dropoff_allowed))
+        .map((s) => {
         const distKm = inputLat != null && inputLng != null ? calcHaversineDistanceKm(inputLat, inputLng, s.latitude, s.longitude) : 0;
         const distInfo = formatDistance(distKm);
         return {
@@ -196,12 +424,13 @@ const resolveLocation = async (input, role = 'pickup') => {
           matched_alias: null,
           ...distInfo,
         };
-      });
+      })
+        .filter((candidate) => !strictCoordinates || !hasGps
+          || calcHaversineDistanceKm(inputLat, inputLng, candidate.latitude, candidate.longitude) <= radiusKm);
     }
   }
 
   const queryNorm = normalizeText(inputName);
-  const hasGps = inputLat !== null && inputLng !== null;
 
   // Filter out stops based on pickup/dropoff allowed flag if specified
   const eligibleStops = allStops.filter((s) => role === 'pickup' ? s.pickup_allowed : s.dropoff_allowed);
@@ -246,12 +475,13 @@ const resolveLocation = async (input, role = 'pickup') => {
       }
     }
 
-    if (!matchType && hasGps && distKm <= BUS_STOP_SEARCH_RADIUS_KM) {
+    if (!matchType && hasGps && distKm <= radiusKm) {
       matchType = 'gps_nearby';
-      confidence = Math.max(0.5, 1.0 - (distKm / BUS_STOP_SEARCH_RADIUS_KM) * 0.4);
+      confidence = Math.max(0.5, 1.0 - (distKm / radiusKm) * 0.4);
     }
 
     if (matchType) {
+      if (strictCoordinates && hasGps && distKm > radiusKm) continue;
       candidates.push({
         ...s,
         matched_by: matchType,
@@ -264,7 +494,7 @@ const resolveLocation = async (input, role = 'pickup') => {
   }
 
   // Fallback: If no candidate match found by name but GPS is available, expand radius to 3km
-  if (candidates.length === 0 && hasGps) {
+  if (allowExpandedRadius && candidates.length === 0 && hasGps) {
     for (const s of eligibleStops) {
       const distKm = calcHaversineDistanceKm(inputLat, inputLng, s.latitude, s.longitude);
       if (distKm <= BUS_STOP_EXPANDED_RADIUS_KM) {
@@ -306,7 +536,8 @@ const searchStopsSuggestions = async (req, res, next) => {
     const lat = latRaw != null && !isNaN(parseFloat(latRaw)) ? parseFloat(latRaw) : null;
     const lng = lngRaw != null && !isNaN(parseFloat(lngRaw)) ? parseFloat(lngRaw) : null;
 
-    const candidates = await resolveLocation({ name: query, latitude: lat, longitude: lng }, 'pickup');
+    const radiusKm = await getConfiguredSearchRadiusKm();
+    const candidates = await resolveLocation({ name: query, latitude: lat, longitude: lng }, 'pickup', { radiusKm });
 
     // Deduplicate by stop_name
     const seenNames = new Set();
@@ -346,7 +577,9 @@ const searchStopsSuggestions = async (req, res, next) => {
 module.exports = {
   BUS_STOP_SEARCH_RADIUS_KM,
   BUS_STOP_EXPANDED_RADIUS_KM,
+  DEFAULT_BUS_STOP_SEARCH_RADIUS_KM,
   FUZZY_MATCH_THRESHOLD,
+  getConfiguredSearchRadiusKm,
   calcHaversineDistanceKm,
   normalizeText,
   calculateSimilarity,

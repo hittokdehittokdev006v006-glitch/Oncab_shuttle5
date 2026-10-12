@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { settingsAPI } from '../services/api';
-import { Card, Button, Input, ErrorState, LoadingState } from '../components/ui';
+import { Card, Button, Input, Select } from '../components/ui';
 import { Settings, Shield, Bell, Key, Save, CheckCircle, Database } from 'lucide-react';
 
 interface SettingsPageProps {
@@ -17,6 +17,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
     support_phone: '+91 98765 43210',
     currency: 'INR',
     currency_symbol: '₹',
+    payu_refund_mode: 'standard',
+    bus_stop_search_radius_km: '1',
     cancellation_fee_percentage: '10',
     allow_cancellation_hours: '2',
     sms_gateway_enabled: 'true',
@@ -28,9 +30,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
     try {
       setLoading(true);
       const resp = await settingsAPI.list();
-      if (resp.data.data && Array.isArray(resp.data.data)) {
+      const savedSettings = Array.isArray(resp.data.data)
+        ? resp.data.data
+        : resp.data.data?.settings || [];
+      if (savedSettings.length) {
         const map: Record<string, string> = {};
-        resp.data.data.forEach((s: any) => {
+        savedSettings.forEach((s: any) => {
           if (!['razorpay_key_id', 'razorpay_secret'].includes(s.key)) map[s.key] = s.value;
         });
         setSettings((prev) => ({ ...prev, ...map }));
@@ -52,11 +57,24 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    const searchRadiusKm = Number(settings.bus_stop_search_radius_km);
+    if (!Number.isFinite(searchRadiusKm) || searchRadiusKm <= 0) {
+      onNotify('Search radius must be a number greater than 0 km', 'error');
+      return;
+    }
     setSaving(true);
     try {
       const payload = Object.entries(settings)
         .filter(([key]) => !['razorpay_key_id', 'razorpay_secret'].includes(key))
-        .map(([key, value]) => ({ key, value }));
+        .map(([key, value]) => {
+          if (key === 'payu_refund_mode') {
+            return { key, value, type: 'string', group: 'payment', label: 'PayU Refund Mode', description: 'Select whether PayU refunds are submitted immediately or handled through the standard refund flow.' };
+          }
+          if (key === 'bus_stop_search_radius_km') {
+            return { key, value, type: 'number', group: 'booking', label: 'Pickup and Dropoff Search Radius (km)', description: 'Maximum straight-line distance from both requested coordinates to their matching route stops.' };
+          }
+          return { key, value };
+        });
       await settingsAPI.bulkUpdate(payload);
       onNotify('Settings saved successfully!');
     } catch (err: any) {
@@ -157,6 +175,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
                   value={settings.cancellation_fee_percentage}
                   onChange={(e) => handleChange('cancellation_fee_percentage', e.target.value)}
                 />
+                <Input
+                  label="Pickup and Dropoff Search Radius (km)"
+                  type="number"
+                  value={settings.bus_stop_search_radius_km}
+                  onChange={(e) => handleChange('bus_stop_search_radius_km', e.target.value)}
+                />
               </div>
             </div>
           )}
@@ -167,6 +191,19 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
               <p className="text-sm text-slate-400">PayU merchant credentials are configured on the server and must never be stored or exposed in browser settings.</p>
               <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-4 text-sm text-slate-300">
                 Set <code>PAYU_KEY</code>, <code>PAYU_SALT</code>, and the PayU checkout/API URLs in the server environment. Use PayU test endpoints until the merchant account is enabled for production.
+              </div>
+              <div className="max-w-md space-y-2">
+                <label className="block text-sm font-medium text-slate-300">PayU Refund Mode</label>
+                <Select
+                  value={settings.payu_refund_mode || 'standard'}
+                  onChange={(value) => handleChange('payu_refund_mode', value)}
+                  options={[
+                    { value: 'instant', label: 'Instant' },
+                    { value: 'standard', label: 'Standard' },
+                  ]}
+                  placeholder="Select PayU refund mode"
+                />
+                <p className="text-xs text-slate-400">Instant submits the PayU refund request as soon as an admin processes it. Standard uses PayU’s normal refund flow; final settlement timing is determined by PayU.</p>
               </div>
             </div>
           )}

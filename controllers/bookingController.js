@@ -1,7 +1,7 @@
 'use strict';
 
 const { Op, fn, col } = require('sequelize');
-const { Booking, Trip, CustomerUser, Stop, Payment, Refund, Coupon, CouponUsage, Route, Vehicle, Driver, DriverDetail, BusType } = require('../models');
+const { Booking, Trip, CustomerUser, Stop, RouteStop, Payment, Refund, Coupon, CouponUsage, Route, Vehicle, Driver, DriverDetail, BusType } = require('../models');
 const { logAction } = require('../middleware/auditLog');
 const sequelize = require('../config/database');
 const { calculateCouponDiscount } = require('../utils/coupon');
@@ -127,16 +127,82 @@ exports.show = async (req, res, next) => {
 exports.create = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
-    const { trip_id, passenger_id, passenger_name, passenger_mobile, passenger_email, origin_stop_id, destination_stop_id, travel_date, seat_numbers, total_seats, payment_method, coupon_id, coupon_code, device_id, special_requests } = req.body;
+    const { trip_id, schedule_id, passenger_id, passenger_name, passenger_mobile, passenger_email, origin_stop_id, destination_stop_id, travel_date, seat_numbers, total_seats, payment_method, coupon_id, coupon_code, device_id, special_requests } = req.body;
+    const tripIdsToTry = [...new Set([trip_id, schedule_id].filter((id) => id != null && id !== ''))];
+    if (tripIdsToTry.length === 0) {
+      await t.rollback();
+      return res.status(400).json({ success: false, message: 'trip_id or schedule_id is required' });
+    }
 
-    const trip = await Trip.findByPk(trip_id, {
-      include: [
-        { model: Vehicle, as: 'vehicle', required: false },
-        { model: BusType, as: 'bus_type', required: false },
-      ],
-      transaction: t,
-    });
-    if (!trip) { await t.rollback(); return res.status(404).json({ success: false, message: 'Trip not found' }); }
+    const requestedTravelDate = travel_date ? String(travel_date).slice(0, 10) : null;
+    let trip = null;
+    let dateMismatchTrip = null;
+    for (const candidateTripId of tripIdsToTry) {
+      const candidateTrip = await Trip.findByPk(candidateTripId, {
+        include: [
+          { model: Vehicle, as: 'vehicle', required: false },
+          { model: BusType, as: 'bus_type', required: false },
+        ],
+        transaction: t,
+      });
+      if (candidateTrip && requestedTravelDate && candidateTrip.trip_date
+        && String(candidateTrip.trip_date).slice(0, 10) !== requestedTravelDate) {
+        dateMismatchTrip = candidateTrip;
+        continue;
+      }
+      trip = candidateTrip;
+      if (trip) break;
+    }
+    if (!trip) {
+      await t.rollback();
+      if (dateMismatchTrip) {
+        return res.status(409).json({
+          success: false,
+          message: 'Selected trip is scheduled for a different travel date',
+          data: { trip_id: dateMismatchTrip.id, trip_date: dateMismatchTrip.trip_date, requested_travel_date: requestedTravelDate },
+        });
+      }
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    if (!['Scheduled', 'Active'].includes(String(trip.status))) {
+      await t.rollback();
+      return res.status(409).json({
+        success: false,
+        message: 'Only Scheduled or Active trips can be booked',
+        data: { trip_id: trip.id, trip_status: trip.status },
+      });
+    }
+
+    const selectedStopIds = [...new Set([origin_stop_id, destination_stop_id]
+      .filter((stopId) => stopId != null && stopId !== '')
+      .map(Number))];
+    if (selectedStopIds.length) {
+      const [selectedStops, routeStopLinks] = await Promise.all([
+        Stop.findAll({ where: { id: { [Op.in]: selectedStopIds } }, attributes: ['id', 'route_id'], transaction: t }),
+        RouteStop.findAll({
+          where: { route_id: trip.route_id, stop_id: { [Op.in]: selectedStopIds }, status: 'Active' },
+          attributes: ['stop_id'],
+          transaction: t,
+          raw: true,
+        }),
+      ]);
+      const linkedStopIds = new Set(routeStopLinks.map((link) => Number(link.stop_id)));
+      const stopsById = new Map(selectedStops.map((stop) => [Number(stop.id), stop]));
+      const invalidStopIds = selectedStopIds.filter((stopId) => {
+        const stop = stopsById.get(stopId);
+        return !stop || (Number(stop.route_id) !== Number(trip.route_id) && !linkedStopIds.has(stopId));
+      });
+      if (invalidStopIds.length) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: 'Pickup and destination stops must belong to the selected trip route',
+          code: 'STOP_NOT_ON_TRIP_ROUTE',
+          data: { trip_id: trip.id, route_id: trip.route_id, invalid_stop_ids: invalidStopIds },
+        });
+      }
+    }
 
     const requestedSeats = SeatReservationService.parseSeatNumbers(seat_numbers || req.body.seat_number || req.body.seats);
     if (requestedSeats.length > 0) {

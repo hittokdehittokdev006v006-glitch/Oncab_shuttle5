@@ -159,7 +159,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     ...group,
     items: group.items.filter((item) =>
       (item.id !== 'owner-requests' || ['admin', 'owner'].includes(user?.role?.name || '')) &&
-      (item.id !== 'cancelled-tickets' || user?.role?.name !== 'owner') &&
       (item.id !== 'vehicle-docs' || user?.role?.name !== 'owner') &&
       (!item.permission || hasPermission(item.permission))
     ),

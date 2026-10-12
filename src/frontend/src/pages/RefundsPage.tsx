@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { refundsAPI } from '../services/api';
 import { Card, Table, Tr, Td, Pagination, SearchInput, Select, StatusBadge, ErrorState, Button, ConfirmDialog } from '../components/ui';
-import { RefreshCcw, CheckCircle, XCircle, AlertCircle, ArrowDownLeft } from 'lucide-react';
+import { RefreshCcw } from 'lucide-react';
 
 interface RefundsPageProps {
   onNotify: (msg: string, type?: any) => void;
@@ -62,14 +62,14 @@ export const RefundsPage: React.FC<RefundsPageProps> = ({ onNotify }) => {
     }
   };
 
-  const handleProcessWalletRefund = async (refund: any) => {
+  const handleProcessPayURefund = async (refund: any) => {
     setProcessingId(refund.id);
     try {
       const response = await refundsAPI.process(refund.id, {});
-      onNotify(response.data.message || 'Refund credited to passenger wallet');
+      onNotify(response.data.message || 'Refund submitted to PayU');
       await fetchRefunds();
     } catch (err: any) {
-      onNotify(err.response?.data?.message || 'Unable to credit passenger wallet', 'error');
+      onNotify(err.response?.data?.message || 'Unable to submit PayU refund', 'error');
     } finally {
       setProcessingId(null);
     }
@@ -177,8 +177,8 @@ export const RefundsPage: React.FC<RefundsPageProps> = ({ onNotify }) => {
                       </Button>
                     )}
                     {r.status === 'pending' && (
-                      <Button size="sm" variant="secondary" loading={processingId === r.id} onClick={() => handleProcessWalletRefund(r)}>
-                        Credit to Wallet
+                      <Button size="sm" variant="secondary" loading={processingId === r.id} onClick={() => handleProcessPayURefund(r)}>
+                        Process PayU Refund
                       </Button>
                     )}
                     {r.status === 'processing' && r.refund_method === 'payu' && (

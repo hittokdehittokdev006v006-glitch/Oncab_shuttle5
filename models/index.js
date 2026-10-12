@@ -108,8 +108,8 @@ RateChart.belongsTo(Stop, { foreignKey: 'origin_stop_id', as: 'origin_stop' });
 RateChart.belongsTo(Stop, { foreignKey: 'destination_stop_id', as: 'destination_stop' });
 
 // ─── Trip Associations ───────────────────────────────────
-Trip.belongsTo(Route, { foreignKey: 'route_id', as: 'route', onDelete: 'CASCADE' });
-Route.hasMany(Trip, { foreignKey: 'route_id', as: 'trips', onDelete: 'CASCADE' });
+Trip.belongsTo(Route, { foreignKey: 'route_id', as: 'route' });
+Route.hasMany(Trip, { foreignKey: 'route_id', as: 'trips' });
 
 Trip.belongsTo(BusType, { foreignKey: 'bus_type_id', as: 'bus_type' });
 BusType.hasMany(Trip, { foreignKey: 'bus_type_id', as: 'trips' });
@@ -121,36 +121,36 @@ Trip.belongsTo(Vehicle, { foreignKey: 'vehicle_id', as: 'vehicle' });
 Vehicle.hasMany(Trip, { foreignKey: 'vehicle_id', as: 'trips' });
 
 // ─── Booking Associations ────────────────────────────────
-Booking.belongsTo(Trip, { foreignKey: 'trip_id', as: 'trip', onDelete: 'CASCADE' });
-Trip.hasMany(Booking, { foreignKey: 'trip_id', as: 'bookings', onDelete: 'CASCADE' });
+Booking.belongsTo(Trip, { foreignKey: 'trip_id', as: 'trip' });
+Trip.hasMany(Booking, { foreignKey: 'trip_id', as: 'bookings' });
 
 Booking.belongsTo(CustomerUser, { foreignKey: 'passenger_id', as: 'passenger' });
 CustomerUser.hasMany(Booking, { foreignKey: 'passenger_id', as: 'bookings' });
 CustomerUser.hasMany(WalletTransaction, { foreignKey: 'passenger_id', as: 'wallet_transactions' });
 WalletTransaction.belongsTo(CustomerUser, { foreignKey: 'passenger_id', as: 'passenger' });
 
-Booking.belongsTo(Stop, { foreignKey: 'origin_stop_id', as: 'origin_stop', onDelete: 'SET NULL' });
-Booking.belongsTo(Stop, { foreignKey: 'destination_stop_id', as: 'destination_stop', onDelete: 'SET NULL' });
+Booking.belongsTo(Stop, { foreignKey: 'origin_stop_id', as: 'origin_stop' });
+Booking.belongsTo(Stop, { foreignKey: 'destination_stop_id', as: 'destination_stop' });
 
 Booking.belongsTo(Coupon, { foreignKey: 'coupon_id', as: 'coupon' });
 Coupon.hasMany(Booking, { foreignKey: 'coupon_id', as: 'bookings' });
 Coupon.hasMany(CouponUsage, { foreignKey: 'coupon_id', as: 'redemptions' });
 CouponUsage.belongsTo(Coupon, { foreignKey: 'coupon_id', as: 'coupon' });
-CouponUsage.belongsTo(Booking, { foreignKey: 'booking_id', as: 'booking', onDelete: 'CASCADE' });
-Booking.hasOne(CouponUsage, { foreignKey: 'booking_id', as: 'coupon_usage', onDelete: 'CASCADE' });
+CouponUsage.belongsTo(Booking, { foreignKey: 'booking_id', as: 'booking' });
+Booking.hasOne(CouponUsage, { foreignKey: 'booking_id', as: 'coupon_usage' });
 CouponUsage.belongsTo(CustomerUser, { foreignKey: 'passenger_id', as: 'passenger' });
 CustomerUser.hasMany(CouponUsage, { foreignKey: 'passenger_id', as: 'coupon_usages' });
 
 // ─── Payment Associations ────────────────────────────────
-Payment.belongsTo(Booking, { foreignKey: 'booking_id', as: 'booking', onDelete: 'CASCADE' });
-Booking.hasMany(Payment, { foreignKey: 'booking_id', as: 'payments', onDelete: 'CASCADE' });
+Payment.belongsTo(Booking, { foreignKey: 'booking_id', as: 'booking' });
+Booking.hasMany(Payment, { foreignKey: 'booking_id', as: 'payments' });
 
 Payment.belongsTo(CustomerUser, { foreignKey: 'passenger_id', as: 'passenger' });
 CustomerUser.hasMany(Payment, { foreignKey: 'passenger_id', as: 'payments' });
 
 // ─── Refund Associations ─────────────────────────────────
-Refund.belongsTo(Booking, { foreignKey: 'booking_id', as: 'booking', onDelete: 'CASCADE' });
-Booking.hasMany(Refund, { foreignKey: 'booking_id', as: 'refunds', onDelete: 'CASCADE' });
+Refund.belongsTo(Booking, { foreignKey: 'booking_id', as: 'booking' });
+Booking.hasMany(Refund, { foreignKey: 'booking_id', as: 'refunds' });
 
 Refund.belongsTo(Payment, { foreignKey: 'payment_id', as: 'payment' });
 Payment.hasMany(Refund, { foreignKey: 'payment_id', as: 'refunds' });
