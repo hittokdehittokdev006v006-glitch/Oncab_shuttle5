@@ -176,6 +176,7 @@ export const bookingsAPI = {
   cancel: (id: number, reason?: string) => api.patch(`/bookings/${id}/cancel`, { cancellation_reason: reason }),
   updatePayment: (id: number, data: object) => api.patch(`/bookings/${id}/payment`, data),
   cancelled: (params?: object) => api.get('/bookings/cancelled', { params }),
+  track: (id: number) => api.get(`/bookings/${id}/track`),
 };
 
 export const refundsAPI = {
