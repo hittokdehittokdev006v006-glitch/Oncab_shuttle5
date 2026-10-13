@@ -33,6 +33,7 @@ const SystemSetting = require('./SystemSetting');
 const RateChart = require('./RateChart');
 const WalletTransaction = require('./WalletTransaction');
 const OwnerApprovalRequest = require('./OwnerApprovalRequest');
+const Banner = require('./Banner');
 
 // ─── Role & Permission Associations ─────────────────────
 Role.belongsToMany(Permission, {
@@ -197,4 +198,5 @@ module.exports = {
   RateChart,
   WalletTransaction,
   OwnerApprovalRequest,
+  Banner,
 };

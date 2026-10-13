@@ -238,3 +238,25 @@ export const settingsAPI = {
   update: (data: object) => api.post('/settings', data),
   bulkUpdate: (settings: object[]) => api.put('/settings/bulk', { settings }),
 };
+
+export const bannersAPI = {
+  list: (params?: object) => api.get('/banners', { params }),
+  show: (id: number) => api.get(`/banners/${id}`),
+  create: (data: FormData | object) => {
+    if (typeof FormData !== 'undefined' && data instanceof FormData) {
+      return api.post('/banners', data, { headers: { 'Content-Type': 'multipart/form-data' } });
+    }
+    return api.post('/banners', data);
+  },
+  update: (id: number, data: FormData | object) => {
+    if (typeof FormData !== 'undefined' && data instanceof FormData) {
+      return api.put(`/banners/${id}`, data, { headers: { 'Content-Type': 'multipart/form-data' } });
+    }
+    return api.put(`/banners/${id}`, data);
+  },
+  delete: (id: number) => api.delete(`/banners/${id}`),
+  toggleStatus: (id: number) => api.patch(`/banners/${id}/toggle-status`),
+  reorder: (items: { id: number; display_order: number }[]) => api.patch('/banners/reorder', { items }),
+  trackClick: (id: number) => api.post(`/banners/${id}/click`),
+};
+

@@ -345,6 +345,12 @@ const SettingsPage = React.lazy(() =>
   }))
 );
 
+const BannersPage = React.lazy(() =>
+  import('./pages/BannersPage').then(m => ({
+    default: m.BannersPage
+  }))
+);
+
 const PageWrapper = ({ children }: { children: React.ReactNode }) => (
   <React.Suspense fallback={<LoadingState />}>
     {children}
@@ -413,6 +419,7 @@ const VALID_VIEWS: View[] = [
   'reports',
   'audit-logs',
   'owner-requests',
+  'banners',
   'settings'
 ];
 
@@ -426,6 +433,7 @@ const VIEW_PERMISSIONS: Partial<Record<View, string>> = {
   coupons: 'coupons.read', payments: 'payments.read', 'cancelled-tickets': 'bookings.read',
   refunds: 'refunds.read', 'failed-refunds': 'refunds.read', 'paid-refunds': 'refunds.read',
   notifications: 'notifications.read', reports: 'reports.read', 'audit-logs': 'audit_logs.read',
+  banners: 'banners.read',
   settings: 'settings.manage',
 };
 
@@ -806,6 +814,13 @@ const AppInner: React.FC = () => {
         return (
           <PageWrapper>
             <OwnerApprovalRequestsPage {...props} />
+          </PageWrapper>
+        );
+
+      case 'banners':
+        return (
+          <PageWrapper>
+            <BannersPage {...props} />
           </PageWrapper>
         );
 

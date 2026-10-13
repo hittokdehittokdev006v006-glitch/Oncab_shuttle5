@@ -365,6 +365,35 @@ export interface User {
   updated_at: string | null;
 }
 
+// ── banners ──
+export interface Banner {
+  id: number;
+  title: string;
+  subtitle: string | null;
+  banner_type: 'image' | 'video';
+  media_url: string;
+  media_full_url?: string;
+  thumbnail_url: string | null;
+  thumbnail_full_url?: string;
+  video_type?: 'file' | 'youtube' | 'vimeo' | 'external_url';
+  cta_title: string | null;
+  cta_url: string | null;
+  position: string;
+  display_order: number;
+  is_active: boolean;
+  start_date: string | null;
+  end_date: string | null;
+  autoplay: boolean;
+  is_muted: boolean;
+  loop_video: boolean;
+  show_controls: boolean;
+  click_count: number;
+  view_count: number;
+  created_by?: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 // ── View type for navigation ──
 export type View =
   | 'scheduled-trips'
@@ -375,4 +404,6 @@ export type View =
   | 'passes-management'
   | 'notifications'
   | 'cancelled-tickets-refund'
-  | 'failed-paid-refund';
+  | 'failed-paid-refund'
+  | 'banners';
+

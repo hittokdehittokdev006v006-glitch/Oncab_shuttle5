@@ -7,6 +7,7 @@ const payuController = require('../controllers/payuController');
 const walletController = require('../controllers/walletController');
 const couponController = require('../controllers/couponController');
 const refundController = require('../controllers/refundController');
+const bannerController = require('../controllers/bannerController');
 
 // ── Public Bus APIs (No Authentication Required) ───────────
 // These are for user-facing mobile app
@@ -41,6 +42,11 @@ router.post('/seat-availability', busController.checkSeatAvailability);
 router.get('/calculate-fare', busController.calculateFare);
 router.post('/calculate-fare', busController.calculateFare);
 router.get('/coupons', couponController.listAvailable);
+
+// Promotional Banners (Images & Videos for Home Screen & Deals)
+router.get('/banners', bannerController.getActiveBanners);
+router.post('/banners', bannerController.getActiveBanners);
+router.post('/banners/:id/click', bannerController.trackClick);
 
 // User Bookings (Can be made public with passenger_mobile)
 router.post('/wallet/balance', walletController.balance);

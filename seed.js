@@ -62,6 +62,8 @@ const seedDatabase = async () => {
       { name: 'audit_logs.read', display_name: 'View Audit Logs', module: 'audit_logs', action: 'read' },
       { name: 'notifications.read', display_name: 'View Notifications', module: 'notifications', action: 'read' },
       { name: 'notifications.manage', display_name: 'Manage Notifications', module: 'notifications', action: 'manage' },
+      { name: 'banners.read', display_name: 'View Banners', module: 'banners', action: 'read' },
+      { name: 'banners.manage', display_name: 'Manage Banners', module: 'banners', action: 'manage' },
       { name: 'settings.manage', display_name: 'Manage Settings', module: 'settings', action: 'manage' },
     ];
 

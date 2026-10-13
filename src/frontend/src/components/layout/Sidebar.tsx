@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Users, Shield, UserRound, Truck, Route, MapPin,
   CalendarDays, Ticket, UserCheck, Bus, Package, FileX, RefreshCcw,
   CreditCard, Bell, BarChart3, ClipboardList, Settings, ChevronDown,
-  BusFront, X, LogOut, ChevronRight, ChevronLeft, Tag, Loader2
+  BusFront, X, LogOut, ChevronRight, ChevronLeft, Tag, Loader2, Image
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -15,7 +15,7 @@ export type View =
   | 'rate-charts'
   | 'passengers' | 'bookings' | 'passes' | 'cancelled-tickets' | 'refunds'
   | 'failed-refunds' | 'paid-refunds' | 'payments' | 'notifications'
-  | 'coupons' | 'reports' | 'audit-logs' | 'settings' | 'owner-requests';
+  | 'coupons' | 'reports' | 'audit-logs' | 'settings' | 'owner-requests' | 'banners';
 
 interface NavItem {
   id: View;
@@ -84,8 +84,9 @@ const NAV_GROUPS: NavGroup[] = [
     ]
   },
   {
-    title: 'Communications',
+    title: 'Marketing & Comms',
     items: [
+      { id: 'banners', label: 'Banners (Image & Video)', icon: Image, permission: 'banners.read' },
       { id: 'notifications', label: 'Notifications', icon: Bell, permission: 'notifications.read' },
     ]
   },
