@@ -1658,16 +1658,176 @@ exports.createBooking = async (req, res, next) => {
 };
 
 // ── 15. Public Mobile App Cancel Booking ────────────────────
+// exports.cancelBooking = async (req, res, next) => {
+//   const t = await sequelize.transaction();
+//   try {
+//     const booking_id = req.body?.booking_id || req.body?.id || req.query?.booking_id || req.query?.id;
+//     const booking_reference = req.body?.booking_reference || req.query?.booking_reference;
+//     const cancellation_reason = req.body?.cancellation_reason || req.body?.reason || 'Cancelled by passenger';
+//     const passenger_mobile = req.body?.passenger_mobile || req.query?.passenger_mobile;
+
+//     if (!booking_id && !booking_reference) {
+//       await t.rollback();
+//       return res.status(400).json({
+//         status: 400,
+//         success: false,
+//         message: 'booking_id or booking_reference is required',
+//       });
+//     }
+
+//     const where = {};
+//     if (booking_id) where.id = booking_id;
+//     if (booking_reference) where.booking_reference = booking_reference;
+
+//     const booking = await Booking.findOne({ where, transaction: t });
+//     if (!booking) {
+//       await t.rollback();
+//       return res.status(404).json({
+//         status: 404,
+//         success: false,
+//         message: 'Booking not found',
+//       });
+//     }
+
+//     // Optional mobile mismatch check if provided
+//     if (passenger_mobile && booking.passenger_mobile && String(booking.passenger_mobile).trim() !== String(passenger_mobile).trim()) {
+//       await t.rollback();
+//       return res.status(403).json({
+//         status: 403,
+//         success: false,
+//         message: 'Passenger mobile mismatch for this booking',
+//       });
+//     }
+
+//     if (booking.booking_status === 'cancelled') {
+//       await t.rollback();
+//       return res.status(400).json({
+//         status: 400,
+//         success: false,
+//         message: 'Booking is already cancelled',
+//       });
+//     }
+
+//     const isAdmin = req.user && (req.user.role || req.user.role_id);
+//     if (!isAdmin) {
+//       const trip = await Trip.findByPk(booking.trip_id, { transaction: t });
+//       const originStop = booking.origin_stop_id ? await Stop.findByPk(booking.origin_stop_id, { transaction: t }) : null;
+//       const driverDetail = trip && trip.driver_id ? await DriverDetail.findOne({ where: { driver_id: trip.driver_id }, transaction: t }) : null;
+//       const etaInfo = await getEtaMinutesToPickup({ driverDetail: driverDetail || {}, originStop: originStop || {} });
+//       if (!etaInfo || etaInfo.eta_minutes <= 30) {
+//         console.log(etaInfo);
+        
+//         await t.rollback();
+//         return res.status(400).json({
+//           status: 400,
+//           success: false,
+//           message: etaInfo ? 'Cancellation is allowed only when the road-route ETA to your pickup stop is more than 30 minutes.' : 'Cancellation is blocked because a live road-route ETA to your pickup stop is not available.',
+//           data: etaInfo ? { eta_minutes: Math.round(etaInfo.eta_minutes), distance_meters: Math.round(etaInfo.distance_meters) } : null,
+//         });
+//       }
+//     }
+
+//     const wasSeatAllocated = booking.booking_status === 'confirmed' && booking.payment_status === 'paid';
+//     // Update booking status
+//     await booking.update({
+//       booking_status: 'cancelled',
+//       status: 'Cancelled',
+//       cancellation_reason,
+//       cancelled_at: new Date(),
+//     }, { transaction: t });
+
+//     // Decrement booked seats on associated trip
+//     if (booking.trip_id) {
+//       const trip = await Trip.findByPk(booking.trip_id, { transaction: t });
+//       if (trip && wasSeatAllocated && trip.booked_seats > 0) {
+//         await trip.decrement('booked_seats', {
+//           by: Math.min(trip.booked_seats, booking.total_seats || 1),
+//           transaction: t,
+//         });
+//       }
+//     }
+
+//     // Record the refund request; only the admin refund flow submits it to PayU.
+//     let refundRecord = null;
+
+//     if (booking.payment_status === 'paid' && booking.final_amount > 0) {
+//       const payment = await Payment.findOne({
+//         where: { booking_id: booking.id, status: ['captured', 'partial_refund'] },
+//         order: [['created_at', 'DESC']],
+//         transaction: t,
+//       });
+//       const refundRef = `REF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+//       refundRecord = await Refund.create({
+//         booking_id: booking.id,
+//         payment_id: payment?.id || null,
+//         passenger_id: booking.passenger_id || null,
+//         refund_reference: refundRef,
+//         refund_amount: booking.final_amount,
+//         refund_reason: cancellation_reason,
+//         refund_method: payment?.payu_mihpayid ? 'payu' : null,
+//         status: 'pending',
+//       }, { transaction: t });
+//     }
+
+//     await t.commit();
+
+//     res.status(200).json({
+//       status: 200,
+//       success: true,
+//       message: refundRecord
+//         ? 'Booking cancelled. Refund request is pending admin processing through PayU.'
+//         : 'Booking cancelled successfully',
+//       data: {
+//         booking_id: booking.id,
+//         booking_reference: booking.booking_reference,
+//         booking_status: 'cancelled',
+//         refund: refundRecord ? {
+//           refund_id: refundRecord.id,
+//           refund_reference: refundRecord.refund_reference,
+//           refund_amount: Number(refundRecord.refund_amount),
+//           refund_status: refundRecord.status,
+//           refund_method: refundRecord.refund_method,
+//         } : null,
+//       },
+//     });
+//   } catch (err) {
+//     await t.rollback();
+//     next(err);
+//   }
+// };
+
+
+
 exports.cancelBooking = async (req, res, next) => {
   const t = await sequelize.transaction();
-  try {
-    const booking_id = req.body?.booking_id || req.body?.id || req.query?.booking_id || req.query?.id;
-    const booking_reference = req.body?.booking_reference || req.query?.booking_reference;
-    const cancellation_reason = req.body?.cancellation_reason || req.body?.reason || 'Cancelled by passenger';
-    const passenger_mobile = req.body?.passenger_mobile || req.query?.passenger_mobile;
 
+  try {
+    const booking_id =
+      req.body?.booking_id ||
+      req.body?.id ||
+      req.query?.booking_id ||
+      req.query?.id;
+
+    const booking_reference =
+      req.body?.booking_reference ||
+      req.query?.booking_reference;
+
+    const cancellation_reason =
+      req.body?.cancellation_reason ||
+      req.body?.reason ||
+      'Cancelled by passenger';
+
+    const passenger_mobile =
+      req.body?.passenger_mobile ||
+      req.query?.passenger_mobile;
+
+    // --------------------------------------------------
+    // 1. VALIDATE BOOKING IDENTIFIER
+    // --------------------------------------------------
     if (!booking_id && !booking_reference) {
       await t.rollback();
+
       return res.status(400).json({
         status: 400,
         success: false,
@@ -1676,12 +1836,24 @@ exports.cancelBooking = async (req, res, next) => {
     }
 
     const where = {};
-    if (booking_id) where.id = booking_id;
-    if (booking_reference) where.booking_reference = booking_reference;
 
-    const booking = await Booking.findOne({ where, transaction: t });
+    if (booking_id) {
+      where.id = booking_id;
+    }
+
+    if (booking_reference) {
+      where.booking_reference = booking_reference;
+    }
+
+    const booking = await Booking.findOne({
+      where,
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
     if (!booking) {
       await t.rollback();
+
       return res.status(404).json({
         status: 404,
         success: false,
@@ -1689,9 +1861,17 @@ exports.cancelBooking = async (req, res, next) => {
       });
     }
 
-    // Optional mobile mismatch check if provided
-    if (passenger_mobile && booking.passenger_mobile && String(booking.passenger_mobile).trim() !== String(passenger_mobile).trim()) {
+    // --------------------------------------------------
+    // 2. OPTIONAL PASSENGER MOBILE VALIDATION
+    // --------------------------------------------------
+    if (
+      passenger_mobile &&
+      booking.passenger_mobile &&
+      String(booking.passenger_mobile).trim() !==
+        String(passenger_mobile).trim()
+    ) {
       await t.rollback();
+
       return res.status(403).json({
         status: 403,
         success: false,
@@ -1699,8 +1879,12 @@ exports.cancelBooking = async (req, res, next) => {
       });
     }
 
+    // --------------------------------------------------
+    // 3. CHECK BOOKING STATUS
+    // --------------------------------------------------
     if (booking.booking_status === 'cancelled') {
       await t.rollback();
+
       return res.status(400).json({
         status: 400,
         success: false,
@@ -1708,69 +1892,234 @@ exports.cancelBooking = async (req, res, next) => {
       });
     }
 
-    const isAdmin = req.user && (req.user.role || req.user.role_id);
-    if (!isAdmin) {
-      const trip = await Trip.findByPk(booking.trip_id, { transaction: t });
-      const originStop = booking.origin_stop_id ? await Stop.findByPk(booking.origin_stop_id, { transaction: t }) : null;
-      const driverDetail = trip && trip.driver_id ? await DriverDetail.findOne({ where: { driver_id: trip.driver_id }, transaction: t }) : null;
-      const etaInfo = await getEtaMinutesToPickup({ driverDetail: driverDetail || {}, originStop: originStop || {} });
-      if (!etaInfo || etaInfo.eta_minutes <= 30) {
-        await t.rollback();
-        return res.status(400).json({
-          status: 400,
-          success: false,
-          message: etaInfo ? 'Cancellation is allowed only when the road-route ETA to your pickup stop is more than 30 minutes.' : 'Cancellation is blocked because a live road-route ETA to your pickup stop is not available.',
-          data: etaInfo ? { eta_minutes: Math.round(etaInfo.eta_minutes), distance_meters: Math.round(etaInfo.distance_meters) } : null,
+    // --------------------------------------------------
+    // 4. CHECK ADMIN
+    // --------------------------------------------------
+    const isAdmin = Boolean(
+      req.user && (req.user.role || req.user.role_id)
+    );
+
+    // --------------------------------------------------
+    // 5. DRIVER ETA CANCELLATION RESTRICTION
+    //
+    // Rules:
+    // - Future trip date: skip ETA restriction.
+    // - Active trip today or in the past: check ETA.
+    // - Scheduled or other statuses: skip ETA restriction.
+    // - Admin: skip ETA restriction.
+    // --------------------------------------------------
+    if (!isAdmin && booking.trip_id) {
+      const trip = await Trip.findByPk(booking.trip_id, {
+        transaction: t,
+      });
+
+      if (trip && trip.status === 'Active') {
+        // MySQL DATE / Sequelize DATEONLY is normally YYYY-MM-DD.
+        const tripDate = trip.trip_date
+          ? String(trip.trip_date).slice(0, 10)
+          : null;
+
+        // Get today's date in India, independent of server timezone.
+        const parts = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'Asia/Kolkata',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        }).formatToParts(new Date());
+
+        const dateParts = {};
+
+        for (const part of parts) {
+          if (part.type !== 'literal') {
+            dateParts[part.type] = part.value;
+          }
+        }
+
+        const todayStr =
+          `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
+
+        console.log('[CANCELLATION ETA CHECK]', {
+          trip_id: trip.id,
+          trip_status: trip.status,
+          trip_date: tripDate,
+          today: todayStr,
         });
+
+        // A future-dated trip should not trigger the ETA restriction.
+        if (tripDate && tripDate <= todayStr) {
+          const originStop = booking.origin_stop_id
+            ? await Stop.findByPk(booking.origin_stop_id, {
+                transaction: t,
+              })
+            : null;
+
+          const driverDetail = trip.driver_id
+            ? await DriverDetail.findOne({
+                where: { driver_id: trip.driver_id },
+                transaction: t,
+              })
+            : null;
+
+          const etaInfo = await getEtaMinutesToPickup({
+            driverDetail: driverDetail || {},
+            originStop: originStop || {},
+          });
+
+          const etaMinutes = Number(etaInfo?.eta_minutes);
+          const distanceMeters = Number(etaInfo?.distance_meters);
+
+          // Missing/invalid ETA must not silently allow cancellation.
+          if (
+            !etaInfo ||
+            !Number.isFinite(etaMinutes) ||
+            etaMinutes < 0
+          ) {
+            await t.rollback();
+
+            return res.status(400).json({
+              status: 400,
+              success: false,
+              message:
+                'Cancellation is blocked because the driver-to-pickup ETA is unavailable.',
+              data: null,
+            });
+          }
+
+          // Conservative lower bound for urban shuttle travel time.
+          // Configure CANCELLATION_ETA_MIN_AVG_SPEED_KMH in .env.
+          const configuredSpeed = Number(
+            process.env.CANCELLATION_ETA_MIN_AVG_SPEED_KMH || 25
+          );
+
+          const minimumAverageSpeed =
+            Number.isFinite(configuredSpeed) && configuredSpeed > 0
+              ? configuredSpeed
+              : 25;
+
+          const distanceBasedEta =
+            Number.isFinite(distanceMeters) && distanceMeters > 0
+              ? (distanceMeters / 1000 / minimumAverageSpeed) * 60
+              : 0;
+
+          // Use whichever estimate is longer.
+          const effectiveEta = Math.max(
+            etaMinutes,
+            distanceBasedEta
+          );
+
+          console.log('[CANCELLATION ETA RESULT]', {
+            road_distance_meters: distanceMeters,
+            provider_eta_minutes: etaMinutes,
+            distance_based_minimum_minutes: distanceBasedEta,
+            effective_eta_minutes: effectiveEta,
+          });
+
+          if (effectiveEta <= 30) {
+            await t.rollback();
+
+            return res.status(400).json({
+              status: 400,
+              success: false,
+              message:
+                'Cancellation is not allowed when the driver is 30 minutes or less from the pickup stop.',
+              data: {
+                eta_minutes: Number(effectiveEta.toFixed(2)),
+                provider_eta_minutes: Number(etaMinutes.toFixed(2)),
+                distance_meters: Number.isFinite(distanceMeters)
+                  ? Math.round(distanceMeters)
+                  : null,
+              },
+            });
+          }
+        }
       }
     }
 
-    const wasSeatAllocated = booking.booking_status === 'confirmed' && booking.payment_status === 'paid';
-    // Update booking status
-    await booking.update({
-      booking_status: 'cancelled',
-      status: 'Cancelled',
-      cancellation_reason,
-      cancelled_at: new Date(),
-    }, { transaction: t });
+    // --------------------------------------------------
+    // 6. DETERMINE WHETHER SEATS WERE ALLOCATED
+    // --------------------------------------------------
+    const wasSeatAllocated =
+      booking.booking_status === 'confirmed' &&
+      booking.payment_status === 'paid';
 
-    // Decrement booked seats on associated trip
-    if (booking.trip_id) {
-      const trip = await Trip.findByPk(booking.trip_id, { transaction: t });
-      if (trip && wasSeatAllocated && trip.booked_seats > 0) {
+    // --------------------------------------------------
+    // 7. CANCEL BOOKING
+    // --------------------------------------------------
+    await booking.update(
+      {
+        booking_status: 'cancelled',
+        status: 'Cancelled',
+        cancellation_reason,
+        cancelled_at: new Date(),
+      },
+      { transaction: t }
+    );
+
+    // --------------------------------------------------
+    // 8. RELEASE BOOKED SEATS
+    // --------------------------------------------------
+    if (booking.trip_id && wasSeatAllocated) {
+      const trip = await Trip.findByPk(booking.trip_id, {
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      if (trip && Number(trip.booked_seats) > 0) {
+        const seatsToRelease = Math.min(
+          Number(trip.booked_seats),
+          Number(booking.total_seats || 1)
+        );
+
         await trip.decrement('booked_seats', {
-          by: Math.min(trip.booked_seats, booking.total_seats || 1),
+          by: seatsToRelease,
           transaction: t,
         });
       }
     }
 
-    // Record the refund request; only the admin refund flow submits it to PayU.
+    // --------------------------------------------------
+    // 9. CREATE REFUND REQUEST
+    // Actual PayU refund remains in the admin refund flow.
+    // --------------------------------------------------
     let refundRecord = null;
 
-    if (booking.payment_status === 'paid' && booking.final_amount > 0) {
+    if (
+      booking.payment_status === 'paid' &&
+      Number(booking.final_amount) > 0
+    ) {
       const payment = await Payment.findOne({
-        where: { booking_id: booking.id, status: ['captured', 'partial_refund'] },
+        where: {
+          booking_id: booking.id,
+          status: ['captured', 'partial_refund'],
+        },
         order: [['created_at', 'DESC']],
         transaction: t,
       });
-      const refundRef = `REF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-      refundRecord = await Refund.create({
-        booking_id: booking.id,
-        payment_id: payment?.id || null,
-        passenger_id: booking.passenger_id || null,
-        refund_reference: refundRef,
-        refund_amount: booking.final_amount,
-        refund_reason: cancellation_reason,
-        refund_method: payment?.payu_mihpayid ? 'payu' : null,
-        status: 'pending',
-      }, { transaction: t });
+      const refundRef =
+        `REF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+      refundRecord = await Refund.create(
+        {
+          booking_id: booking.id,
+          payment_id: payment?.id || null,
+          passenger_id: booking.passenger_id || null,
+          refund_reference: refundRef,
+          refund_amount: booking.final_amount,
+          refund_reason: cancellation_reason,
+          refund_method: payment?.payu_mihpayid ? 'payu' : null,
+          status: 'pending',
+        },
+        { transaction: t }
+      );
     }
 
+    // --------------------------------------------------
+    // 10. COMMIT TRANSACTION
+    // --------------------------------------------------
     await t.commit();
 
-    res.status(200).json({
+    return res.status(200).json({
       status: 200,
       success: true,
       message: refundRecord
@@ -1780,17 +2129,22 @@ exports.cancelBooking = async (req, res, next) => {
         booking_id: booking.id,
         booking_reference: booking.booking_reference,
         booking_status: 'cancelled',
-        refund: refundRecord ? {
-          refund_id: refundRecord.id,
-          refund_reference: refundRecord.refund_reference,
-          refund_amount: Number(refundRecord.refund_amount),
-          refund_status: refundRecord.status,
-          refund_method: refundRecord.refund_method,
-        } : null,
+        refund: refundRecord
+          ? {
+              refund_id: refundRecord.id,
+              refund_reference: refundRecord.refund_reference,
+              refund_amount: Number(refundRecord.refund_amount),
+              refund_status: refundRecord.status,
+              refund_method: refundRecord.refund_method,
+            }
+          : null,
       },
     });
   } catch (err) {
-    await t.rollback();
-    next(err);
+    if (!t.finished) {
+      await t.rollback();
+    }
+
+    return next(err);
   }
 };
