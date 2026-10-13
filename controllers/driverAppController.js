@@ -2,7 +2,7 @@
 
 const jwt = require('jsonwebtoken');
 const { Op } = require('sequelize');
-const { Driver, DriverDetail, Trip, Route, Stop, Vehicle, Booking, Passenger, BusType } = require('../models');
+const { Driver, DriverDetail, Trip, Route, Stop, Vehicle, Booking, Passenger, BusType, TripLocation } = require('../models');
 const { saveOtp, verifyOtp: verifySmsOtp, sendFast2SMSOtp } = require('../services/smsService');
 
 // Helper to generate JWT Token for Driver
@@ -459,6 +459,37 @@ exports.startTrip = async (req, res, next) => {
       started_at: new Date(),
     });
 
+    // Check if starting GPS coordinates were provided or exist in DriverDetail
+    const detail = await DriverDetail.findOne({ where: { driver_id: req.driver.id } });
+    const rawLat = req.body?.latitude != null ? req.body.latitude : detail?.latitude;
+    const rawLng = req.body?.longitude != null ? req.body.longitude : detail?.longitude;
+    const startLat = rawLat != null && rawLat !== '' ? Number(rawLat) : null;
+    const startLng = rawLng != null && rawLng !== '' ? Number(rawLng) : null;
+
+    let initialLocation = null;
+    if (startLat != null && startLng != null && Number.isFinite(startLat) && Number.isFinite(startLng)
+        && Math.abs(startLat) <= 90 && Math.abs(startLng) <= 180) {
+      const rawSpeed = req.body?.speed != null ? req.body.speed : detail?.location_speed_kmh;
+      const rawHeading = req.body?.heading != null ? req.body.heading : detail?.location_heading;
+      const startSpeed = rawSpeed != null && rawSpeed !== '' && Number.isFinite(Number(rawSpeed)) ? Number(rawSpeed) : null;
+      const startHeading = rawHeading != null && rawHeading !== '' && Number.isFinite(Number(rawHeading)) ? Number(rawHeading) : null;
+
+      initialLocation = await TripLocation.create({
+        trip_id: trip.id,
+        driver_id: req.driver.id,
+        vehicle_id: trip.vehicle_id || null,
+        latitude: startLat,
+        longitude: startLng,
+        speed_kmh: startSpeed,
+        heading: startHeading,
+        recorded_at: new Date(),
+      });
+    }
+
+    if (detail) {
+      await detail.update({ location_trip_id: trip.id });
+    }
+
     res.json({
       status: 200,
       success: true,
@@ -467,6 +498,7 @@ exports.startTrip = async (req, res, next) => {
         trip_id: trip.id,
         status: trip.status,
         started_at: trip.started_at,
+        initial_location_recorded: Boolean(initialLocation),
       },
     });
   } catch (err) {
@@ -494,6 +526,37 @@ exports.completeTrip = async (req, res, next) => {
       completed_at: new Date(),
     });
 
+    // Check if final ending GPS coordinates were provided or exist in DriverDetail
+    const detail = await DriverDetail.findOne({ where: { driver_id: req.driver.id } });
+    const rawLat = req.body?.latitude != null ? req.body.latitude : detail?.latitude;
+    const rawLng = req.body?.longitude != null ? req.body.longitude : detail?.longitude;
+    const endLat = rawLat != null && rawLat !== '' ? Number(rawLat) : null;
+    const endLng = rawLng != null && rawLng !== '' ? Number(rawLng) : null;
+
+    let finalLocation = null;
+    if (endLat != null && endLng != null && Number.isFinite(endLat) && Number.isFinite(endLng)
+        && Math.abs(endLat) <= 90 && Math.abs(endLng) <= 180) {
+      const rawSpeed = req.body?.speed != null ? req.body.speed : detail?.location_speed_kmh;
+      const rawHeading = req.body?.heading != null ? req.body.heading : detail?.location_heading;
+      const endSpeed = rawSpeed != null && rawSpeed !== '' && Number.isFinite(Number(rawSpeed)) ? Number(rawSpeed) : 0;
+      const endHeading = rawHeading != null && rawHeading !== '' && Number.isFinite(Number(rawHeading)) ? Number(rawHeading) : null;
+
+      finalLocation = await TripLocation.create({
+        trip_id: trip.id,
+        driver_id: req.driver.id,
+        vehicle_id: trip.vehicle_id || null,
+        latitude: endLat,
+        longitude: endLng,
+        speed_kmh: endSpeed,
+        heading: endHeading,
+        recorded_at: new Date(),
+      });
+    }
+
+    if (detail && Number(detail.location_trip_id) === Number(trip.id)) {
+      await detail.update({ location_trip_id: null });
+    }
+
     res.json({
       status: 200,
       success: true,
@@ -502,6 +565,7 @@ exports.completeTrip = async (req, res, next) => {
         trip_id: trip.id,
         status: trip.status,
         completed_at: trip.completed_at,
+        final_location_recorded: Boolean(finalLocation),
       },
     });
   } catch (err) {
@@ -776,7 +840,7 @@ exports.manualVerifyBoarding = async (req, res, next) => {
  */
 exports.updateLocation = async (req, res, next) => {
   try {
-    const { latitude, longitude, speed, heading, trip_id } = req.body || {};
+    const { latitude, longitude, speed, heading, trip_id, accuracy, battery_level, recorded_at } = req.body || {};
     const parsedLatitude = Number(latitude);
     const parsedLongitude = Number(longitude);
     if (latitude == null || longitude == null || latitude === '' || longitude === ''
@@ -792,15 +856,25 @@ exports.updateLocation = async (req, res, next) => {
       return res.status(400).json({ status: 400, success: false, message: 'Speed or heading is invalid' });
     }
 
+    const driverId = req.driver.id;
+
+    // Determine associated trip
+    let activeTrip = null;
     if (trip_id) {
-      const assignedTrip = await Trip.findOne({ where: { id: trip_id, driver_id: req.driver.id } });
-      if (!assignedTrip) {
+      activeTrip = await Trip.findOne({ where: { id: trip_id, driver_id: driverId } });
+      if (!activeTrip) {
         return res.status(403).json({ status: 403, success: false, message: 'Trip is not assigned to this driver' });
       }
+    } else {
+      // Auto-detect currently active trip for this driver
+      activeTrip = await Trip.findOne({
+        where: { driver_id: driverId, status: 'Active' },
+        order: [['started_at', 'DESC'], ['id', 'DESC']],
+      });
     }
 
-    const driverId = req.driver.id;
     let detail = await DriverDetail.findOne({ where: { driver_id: driverId } });
+    const currentTripId = activeTrip ? activeTrip.id : (trip_id || null);
 
     if (detail) {
       await detail.update({
@@ -808,7 +882,7 @@ exports.updateLocation = async (req, res, next) => {
         longitude: parsedLongitude,
         location_speed_kmh: parsedSpeed,
         location_heading: parsedHeading,
-        location_trip_id: trip_id || null,
+        location_trip_id: currentTripId,
       });
     } else {
       await DriverDetail.create({
@@ -817,7 +891,28 @@ exports.updateLocation = async (req, res, next) => {
         longitude: parsedLongitude,
         location_speed_kmh: parsedSpeed,
         location_heading: parsedHeading,
-        location_trip_id: trip_id || null,
+        location_trip_id: currentTripId,
+      });
+    }
+
+    // Per user requirement:
+    // When trips start, store per-trip driver location in database
+    let recordedBreadcrumb = null;
+    if (activeTrip) {
+      const parsedAccuracy = accuracy == null || accuracy === '' ? null : Number(accuracy);
+      const parsedBattery = battery_level == null || battery_level === '' ? null : Number(battery_level);
+
+      recordedBreadcrumb = await TripLocation.create({
+        trip_id: activeTrip.id,
+        driver_id: driverId,
+        vehicle_id: activeTrip.vehicle_id || null,
+        latitude: parsedLatitude,
+        longitude: parsedLongitude,
+        speed_kmh: parsedSpeed,
+        heading: parsedHeading,
+        accuracy: Number.isFinite(parsedAccuracy) ? parsedAccuracy : null,
+        battery_level: Number.isFinite(parsedBattery) ? parsedBattery : null,
+        recorded_at: recorded_at ? new Date(recorded_at) : new Date(),
       });
     }
 
@@ -831,8 +926,64 @@ exports.updateLocation = async (req, res, next) => {
         longitude: parsedLongitude,
         speed: parsedSpeed,
         heading: parsedHeading,
-        trip_id: trip_id || null,
+        trip_id: currentTripId,
+        is_trip_active: Boolean(activeTrip && activeTrip.status === 'Active'),
+        location_stored: Boolean(recordedBreadcrumb),
+        breadcrumb_id: recordedBreadcrumb ? recordedBreadcrumb.id : null,
         updated_at: new Date(),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Get Trip GPS Location History (Breadcrumbs)
+ * GET /api/bus-driver/trips/:id/locations
+ */
+exports.getTripLocations = async (req, res, next) => {
+  try {
+    const tripId = req.params.id;
+    const trip = await Trip.findOne({
+      where: { id: tripId },
+      include: [
+        { model: Driver, as: 'driver', attributes: ['id', 'name', 'mobile'] },
+        { model: Vehicle, as: 'vehicle', attributes: ['id', 'registration_number', 'company_model'] },
+        { model: Route, as: 'route', attributes: ['id', 'route_name', 'origin_city', 'destination_city'] },
+      ],
+    });
+
+    if (!trip) {
+      return res.status(404).json({ status: 404, success: false, message: 'Trip not found' });
+    }
+
+    // Driver can only access trips assigned to them
+    if (req.driver && Number(trip.driver_id) !== Number(req.driver.id)) {
+      return res.status(403).json({ status: 403, success: false, message: 'Unauthorized access to trip locations' });
+    }
+
+    const { limit = 1000 } = req.query;
+    const locations = await TripLocation.findAll({
+      where: { trip_id: tripId },
+      order: [['recorded_at', 'ASC']],
+      limit: Math.min(5000, Math.max(1, parseInt(limit, 10) || 1000)),
+      attributes: ['id', 'latitude', 'longitude', 'speed_kmh', 'heading', 'accuracy', 'battery_level', 'recorded_at'],
+    });
+
+    res.json({
+      status: 200,
+      success: true,
+      data: {
+        trip_id: trip.id,
+        status: trip.status,
+        started_at: trip.started_at,
+        completed_at: trip.completed_at,
+        driver: trip.driver,
+        vehicle: trip.vehicle,
+        route: trip.route,
+        total_points: locations.length,
+        locations,
       },
     });
   } catch (err) {

@@ -48,4 +48,32 @@ const ensureTripsIndex = async () => {
   }
 };
 
-module.exports = { ensureTripsIndex };
+const ensureTripLocationsTable = async () => {
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS \`trip_locations\` (
+        \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        \`trip_id\` INT UNSIGNED NOT NULL,
+        \`driver_id\` INT UNSIGNED NOT NULL,
+        \`vehicle_id\` INT UNSIGNED DEFAULT NULL,
+        \`latitude\` DECIMAL(10, 7) NOT NULL,
+        \`longitude\` DECIMAL(10, 7) NOT NULL,
+        \`speed_kmh\` DECIMAL(7, 2) DEFAULT NULL,
+        \`heading\` DECIMAL(6, 2) DEFAULT NULL,
+        \`accuracy\` DECIMAL(6, 2) DEFAULT NULL,
+        \`battery_level\` DECIMAL(5, 2) DEFAULT NULL,
+        \`recorded_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        KEY \`idx_trip_locations_trip_recorded\` (\`trip_id\`, \`recorded_at\`),
+        KEY \`idx_trip_locations_recorded_at\` (\`recorded_at\`),
+        KEY \`idx_trip_locations_driver_id\` (\`driver_id\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+  } catch (err) {
+    console.error('ensureTripLocationsTable error:', err.message);
+  }
+};
+
+module.exports = { ensureTripsIndex, ensureTripLocationsTable };

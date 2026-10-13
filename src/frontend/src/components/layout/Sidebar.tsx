@@ -3,7 +3,8 @@ import {
   LayoutDashboard, Users, Shield, UserRound, Truck, Route, MapPin,
   CalendarDays, Ticket, UserCheck, Bus, Package, FileX, RefreshCcw,
   CreditCard, Bell, BarChart3, ClipboardList, Settings, ChevronDown,
-  BusFront, X, LogOut, ChevronRight, ChevronLeft, Tag, Loader2, Image
+  BusFront, X, LogOut, ChevronRight, ChevronLeft, Tag, Loader2, Image,
+  History
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -11,7 +12,7 @@ const ROUTE_PREFIX = (import.meta.env.VITE_ROUTE_PREFIX || '').replace(/\/$/, ''
 export type View = 
   | 'dashboard' | 'users' | 'roles' | 'drivers' | 'vehicles' | 'vehicle-docs'
   | 'routes' | 'stops' | 'trips' | 'scheduled-trips'
-  | 'locations'
+  | 'locations' | 'driver-location-history'
   | 'rate-charts'
   | 'passengers' | 'bookings' | 'passes' | 'cancelled-tickets' | 'refunds'
   | 'failed-refunds' | 'paid-refunds' | 'payments' | 'notifications'
@@ -60,7 +61,8 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'stops', label: 'Stops & Stations', icon: MapPin, permission: 'routes.read' },
       { id: 'trips', label: 'Trips', icon: Bus, permission: 'trips.read' },
       { id: 'scheduled-trips', label: 'Scheduled Trips', icon: CalendarDays, permission: 'schedules.read' },
-      { id: 'locations', label: 'Location', icon: MapPin, permission: 'locations.read' },
+      { id: 'locations', label: 'Live Location', icon: MapPin, permission: 'locations.read' },
+      { id: 'driver-location-history', label: 'Driver Location History', icon: History, permission: 'locations.read' },
       { id: 'rate-charts', label: 'Rate Charts', icon: CreditCard, permission: 'rates.read' },
     ]
   },

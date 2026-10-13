@@ -34,6 +34,7 @@ const RateChart = require('./RateChart');
 const WalletTransaction = require('./WalletTransaction');
 const OwnerApprovalRequest = require('./OwnerApprovalRequest');
 const Banner = require('./Banner');
+const TripLocation = require('./TripLocation');
 
 // ─── Role & Permission Associations ─────────────────────
 Role.belongsToMany(Permission, {
@@ -121,6 +122,16 @@ Driver.hasMany(Trip, { foreignKey: 'driver_id', as: 'trips' });
 Trip.belongsTo(Vehicle, { foreignKey: 'vehicle_id', as: 'vehicle' });
 Vehicle.hasMany(Trip, { foreignKey: 'vehicle_id', as: 'trips' });
 
+// ─── Trip Location Associations ──────────────────────────
+TripLocation.belongsTo(Trip, { foreignKey: 'trip_id', as: 'trip' });
+Trip.hasMany(TripLocation, { foreignKey: 'trip_id', as: 'locations', onDelete: 'CASCADE' });
+
+TripLocation.belongsTo(Driver, { foreignKey: 'driver_id', as: 'driver' });
+Driver.hasMany(TripLocation, { foreignKey: 'driver_id', as: 'trip_locations' });
+
+TripLocation.belongsTo(Vehicle, { foreignKey: 'vehicle_id', as: 'vehicle' });
+Vehicle.hasMany(TripLocation, { foreignKey: 'vehicle_id', as: 'trip_locations' });
+
 // ─── Booking Associations ────────────────────────────────
 Booking.belongsTo(Trip, { foreignKey: 'trip_id', as: 'trip' });
 Trip.hasMany(Booking, { foreignKey: 'trip_id', as: 'bookings' });
@@ -199,4 +210,5 @@ module.exports = {
   WalletTransaction,
   OwnerApprovalRequest,
   Banner,
+  TripLocation,
 };

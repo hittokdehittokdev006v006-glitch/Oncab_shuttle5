@@ -98,7 +98,8 @@ app.use(notFound);
 app.use(errorHandler);
 
 // ── Start Server ─────────────────────────────────────────────
-const { ensureTripsIndex } = require('../utils/dbIndexMigrator');
+const { ensureTripsIndex, ensureTripLocationsTable } = require('../utils/dbIndexMigrator');
+const { startTripLocationPurgeJob } = require('../services/tripLocationPurgeService');
 
 const PORT = parseInt(process.env.PORT || '4000');
 
@@ -107,6 +108,9 @@ const startServer = async () => {
     await sequelize.authenticate();
     console.log('✅ Database connected successfully');
     await ensureTripsIndex();
+    await ensureTripLocationsTable();
+    // Start automatic retention purge for trip driver locations (>= 48h data kept)
+    startTripLocationPurgeJob();
     // Sync models (use migrations in production)
     if (process.env.NODE_ENV === 'development') {
       await sequelize.sync({ alter: false });

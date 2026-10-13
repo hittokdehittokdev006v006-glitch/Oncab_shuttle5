@@ -77,6 +77,8 @@ export const dashboardAPI = {
 
 export const locationsAPI = {
   dashboard: () => api.get('/locations/dashboard'),
+  getHistoryList: (params?: object) => api.get('/locations/history', { params }),
+  getTripHistory: (tripId: number, params?: object) => api.get(`/locations/trips/${tripId}`, { params }),
 };
 
 export const rateChartsAPI = {

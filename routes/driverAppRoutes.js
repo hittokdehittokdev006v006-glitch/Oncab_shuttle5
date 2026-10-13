@@ -57,6 +57,7 @@ router.post('/manual-verify-boarding', driverAppController.manualVerifyBoarding)
 
 // GPS Live Location
 router.post('/location/update', driverAppController.updateLocation);
+router.get('/trips/:id/locations', driverAppController.getTripLocations);
 
 // History & Earnings
 router.get('/history', driverAppController.getTripHistory);
