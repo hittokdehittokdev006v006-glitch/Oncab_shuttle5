@@ -12,10 +12,11 @@ const buildPagination = (page, limit) => {
   return { offset: (p - 1) * l, limit: l, page: p };
 };
 
-// Seed initial default banners if none exist
+// Guard to ensure seed check only happens once in memory, never repeating Banner.sync() on requests
+let defaultsChecked = false;
 const seedDefaultsIfEmpty = async () => {
+  if (defaultsChecked) return;
   try {
-    await Banner.sync();
     const count = await Banner.count();
     if (count === 0) {
       await Banner.bulkCreate([
@@ -57,8 +58,10 @@ const seedDefaultsIfEmpty = async () => {
         },
       ]);
     }
+    defaultsChecked = true;
   } catch (err) {
-    console.error('Error auto-seeding banners:', err.message);
+    console.warn('Default banners check warning:', err.message);
+    defaultsChecked = true;
   }
 };
 
@@ -105,13 +108,39 @@ exports.list = async (req, res, next) => {
       ],
     });
 
-    // Compute stats
-    const totalCount = await Banner.count();
-    const activeCount = await Banner.count({ where: { is_active: true } });
-    const imageCount = await Banner.count({ where: { banner_type: 'image' } });
-    const videoCount = await Banner.count({ where: { banner_type: 'video' } });
-    const totalViews = (await Banner.sum('view_count')) || 0;
-    const totalClicks = (await Banner.sum('click_count')) || 0;
+    // Compute stats safely in parallel with fallback to prevent timeouts
+    let stats = {
+      total: count,
+      active: 0,
+      inactive: 0,
+      image_count: 0,
+      video_count: 0,
+      total_views: 0,
+      total_clicks: 0,
+    };
+
+    try {
+      const [totalCount, activeCount, imageCount, videoCount, totalViews, totalClicks] = await Promise.all([
+        Banner.count().catch(() => count),
+        Banner.count({ where: { is_active: true } }).catch(() => 0),
+        Banner.count({ where: { banner_type: 'image' } }).catch(() => 0),
+        Banner.count({ where: { banner_type: 'video' } }).catch(() => 0),
+        Banner.sum('view_count').catch(() => 0),
+        Banner.sum('click_count').catch(() => 0),
+      ]);
+
+      stats = {
+        total: Number(totalCount) || count,
+        active: Number(activeCount) || 0,
+        inactive: Math.max(0, (Number(totalCount) || count) - (Number(activeCount) || 0)),
+        image_count: Number(imageCount) || 0,
+        video_count: Number(videoCount) || 0,
+        total_views: Number(totalViews) || 0,
+        total_clicks: Number(totalClicks) || 0,
+      };
+    } catch (statsErr) {
+      console.warn('Banner stats calculation warning:', statsErr.message);
+    }
 
     const formattedRows = rows.map((banner) => {
       const b = banner.toJSON();
@@ -123,15 +152,7 @@ exports.list = async (req, res, next) => {
     return res.json({
       success: true,
       data: formattedRows,
-      stats: {
-        total: totalCount,
-        active: activeCount,
-        inactive: totalCount - activeCount,
-        image_count: imageCount,
-        video_count: videoCount,
-        total_views: totalViews,
-        total_clicks: totalClicks,
-      },
+      stats,
       pagination: {
         total: count,
         page: p,
