@@ -1042,7 +1042,18 @@ exports.getUserBookings = async (req, res, next) => {
                 as: 'stops',
                 attributes: ['id', 'stop_name', 'stop_code', 'stop_sequence', 'latitude', 'longitude', 'address', 'landmark'],
                 required: false,
-              }],
+              },
+                {
+                  model: RouteStop,
+                  as: 'route_stops',
+                  required: false,
+                  include: [{
+                    model: Stop,
+                    as: 'stop',
+                    attributes: ['id', 'stop_name', 'stop_code', 'stop_sequence', 'latitude', 'longitude', 'address', 'landmark'],
+                    required: false,
+                  }],
+                }],
               required: false,
             },
             { model: Vehicle, as: 'vehicle', attributes: ['id', 'registration_number', 'company_model', 'color', 'latitude', 'longitude', 'status'], required: false },
@@ -1073,7 +1084,21 @@ exports.getUserBookings = async (req, res, next) => {
       const driverDetail = driver.details || {};
       const originStop = b.origin_stop || {};
 
-      if (trip.route?.stops) {
+      // Prefer route_stops ordering if available, else fallback to legacy stops
+      if (trip.route?.route_stops && trip.route.route_stops.length > 0) {
+        trip.route.stops = trip.route.route_stops
+          .filter(rs => rs.stop)
+          .sort((a, b) => Number(a.stop_sequence || 0) - Number(b.stop_sequence || 0))
+          .map(rs => {
+            const s = rs.stop;
+            return {
+              ...s.get ? s.get() : s,
+              latitude: s.latitude == null ? null : Number(s.latitude),
+              longitude: s.longitude == null ? null : Number(s.longitude),
+              stop_sequence: rs.stop_sequence,
+            };
+          });
+      } else if (trip.route?.stops) {
         trip.route.stops = trip.route.stops
           .slice()
           .sort((stopA, stopB) => (Number(stopA.stop_sequence) || 0) - (Number(stopB.stop_sequence) || 0))
