@@ -302,8 +302,8 @@ class BusRouteSearchService {
 
       if (matchingDropoffStops.length === 0) continue;
 
-      // DIRECTION VALIDATION: Check for pairs where pickup_stop_order < dropoff_stop_order
-      let validPair = null;
+      // DIRECTION VALIDATION: Check all valid pairs and select the pair with the shortest total road distance
+      const validPairs = [];
       for (const pStop of matchingPickupStops) {
         const pSeq = Number(pStop.stop_sequence || 1);
         for (const dStop of matchingDropoffStops) {
@@ -315,14 +315,24 @@ class BusRouteSearchService {
           if (hasDropoffCoordinates && !dropoffCandidate) continue;
 
           if (pSeq < dSeq && Number(pStop.id || pStop.stop_id) !== Number(dStop.id || dStop.stop_id)) {
-            validPair = { pickupStop: pStop, dropStop: dStop };
-            break;
+            const pDist = Number(pickupCandidate?.distance || 0);
+            const dDist = Number(dropoffCandidate?.distance || 0);
+            validPairs.push({
+              pickupStop: pStop,
+              dropStop: dStop,
+              totalDist: pDist + dDist,
+              pDist,
+              dDist,
+            });
           }
         }
-        if (validPair) break;
       }
 
-      if (!validPair) continue; // Invalid direction (pickup is after dropoff)
+      if (validPairs.length === 0) continue; // Invalid direction (pickup is after dropoff)
+
+      // Choose the pair that provides the shortest walking/road distance to user
+      validPairs.sort((a, b) => a.totalDist - b.totalDist || a.pDist - b.pDist || a.dDist - b.dDist);
+      const validPair = validPairs[0];
 
       const { pickupStop, dropStop } = validPair;
 
@@ -358,8 +368,11 @@ class BusRouteSearchService {
       });
     }
 
-    // Deterministic ranking: direct route weight + pickup/dropoff distance + departure time + duration
+    // Deterministic ranking: prioritize total distance (pickup + dropoff), then existing criteria
     matchedResults.sort((a, b) => {
+      const aTotalDist = (a.pickupDistKm || 0) + (a.dropDistKm || 0);
+      const bTotalDist = (b.pickupDistKm || 0) + (b.dropDistKm || 0);
+      if (Math.abs(aTotalDist - bTotalDist) > 0.001) return aTotalDist - bTotalDist;
       if (Math.abs(a.pickupDistKm - b.pickupDistKm) > 0.1) return a.pickupDistKm - b.pickupDistKm;
       if (Math.abs(a.dropDistKm - b.dropDistKm) > 0.1) return a.dropDistKm - b.dropDistKm;
       const aMinPickup = Math.min(...a.schedules.map((s) => s.pickupMins || 0));

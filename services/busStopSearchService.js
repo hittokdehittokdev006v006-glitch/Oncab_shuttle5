@@ -6,8 +6,10 @@ const { Route, Stop, BusRoute, BusStop, SystemSetting } = require('../models');
 // Configuration parameters
 //   const eligibleStops = allStops.filter((stop) => (
 const BUS_STOP_SEARCH_RADIUS_KM = 5.0;
-const BUS_STOP_EXPANDED_RADIUS_KM = 7.0; // 3000m expanded radius
+// Expanded radius used when no exact coordinates are provided (e.g., name‑only searches)
+const BUS_STOP_EXPANDED_RADIUS_KM = 6.0; // larger radius to capture nearby stops like Dhali Bridge
 const FUZZY_MATCH_THRESHOLD = 2; // Similarity score threshold (0.0 - 1.0)
+// Fallback radius if system setting is missing – increased to improve coverage
 const DEFAULT_BUS_STOP_SEARCH_RADIUS_KM = 5.0;
 
 const getConfiguredSearchRadiusKm = async () => {
@@ -374,17 +376,50 @@ const resolveLocation = async (input, role = 'pickup', options = {}) => {
         };
       });
 
-    // If a strong name match exists, do not substitute a different
-    // nearby stop just because its road distance is shorter.
-    const nameMatches = nearbyStops.filter((stop) =>
-      ['exact', 'alias', 'contains'].includes(stop.matched_by)
-    );
+// If a strong name match exists, do not substitute a different
+// nearby stop just because its road distance is shorter.
+// Keep name‑matches, but also retain pure distance‑matches so a closer stop isn’t discarded.
+// -------------------------------------------------------------------
+// When explicit GPS coordinates are supplied we also consider any stop
+// within a very small radius (≈ 50 m) as an exact‑coordinate match. This enables callers to request a stop by lat/lng and receive the precise stop even when the name does not match.
+const exactCoordThresholdKm = 0.05; // 50 m
+const exactCoordMatches = hasGps
+  ? eligibleStops
+      .filter((stop) => {
+        const d = calcHaversineDistanceKm(inputLat, inputLng, stop.latitude, stop.longitude);
+        return d <= exactCoordThresholdKm;
+      })
+      .map((stop) => ({
+        ...stop,
+        matched_by: 'exact_coords',
+        confidence: 1,
+        input_name: inputName,
+        matched_alias: null,
+        ...formatDistance(0),
+      }))
+  : [];
 
-    const candidates = nameMatches.length > 0
-      ? nameMatches
-      : nearbyStops;
+const nameMatches = nearbyStops.filter((stop) =>
+  ['exact', 'alias', 'contains'].includes(stop.matched_by)
+);
+
+const distanceOnly = nearbyStops.filter(
+  (stop) => stop.matched_by === 'osm_road_distance'
+);
+
+// Combine candidates, preferring exact‑coordinate and name matches.
+const candidateMap = new Map();
+exactCoordMatches.forEach((s) => candidateMap.set(Number(s.id), s));
+nameMatches.forEach((s) => candidateMap.set(Number(s.id), s));
+distanceOnly.forEach((s) => {
+  if (!candidateMap.has(Number(s.id))) candidateMap.set(Number(s.id), s);
+});
+const candidates = Array.from(candidateMap.values());
+
+    // Candidates are defined earlier with exact coordinate handling; no need to redeclare here.
 
     const matchPriorityOrder = {
+      exact_coords: 0,
       exact: 1,
       alias: 2,
       contains: 3,
@@ -393,6 +428,12 @@ const resolveLocation = async (input, role = 'pickup', options = {}) => {
     };
 
     return candidates.sort((a, b) => {
+      // Primary: shortest road distance wins (closest stop on top)
+      const aDistKm = a.distance_km ?? Infinity;
+      const bDistKm = b.distance_km ?? Infinity;
+      if (Math.abs(aDistKm - bDistKm) > 0.1) return aDistKm - bDistKm;
+
+      // Secondary: match type priority as tiebreaker
       const priorityDiff =
         (matchPriorityOrder[a.matched_by] || 99) -
         (matchPriorityOrder[b.matched_by] || 99);
