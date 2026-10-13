@@ -198,6 +198,42 @@ const formatTime12h = (timeStr, offsetMins = 0) => {
   return `${String(displayH).padStart(2, '0')}:${String(m).padStart(2, '0')} ${ampm}`;
 };
 
+const isScheduleActiveOnDate = (sch, searchDateStr) => {
+  if (!sch || !searchDateStr) return false;
+
+  const validFrom = sch.valid_from ? String(sch.valid_from).slice(0, 10) : null;
+  const validUntil = sch.valid_until ? String(sch.valid_until).slice(0, 10) : null;
+  const tripDate = sch.trip_date ? String(sch.trip_date).slice(0, 10) : null;
+
+  if (validFrom && validFrom > searchDateStr) return false;
+  if (validUntil && validUntil < searchDateStr) return false;
+  if (tripDate) return tripDate === searchDateStr;
+
+  if (!sch.operating_days) return true;
+
+  const str = String(sch.operating_days).toLowerCase().trim();
+  if (['daily', 'all', 'everyday', '7', '1,2,3,4,5,6,7'].includes(str)) return true;
+
+  const dateObj = new Date(`${searchDateStr}T00:00:00.000Z`);
+  const dayOfWeek = isNaN(dateObj.getUTCDay()) ? 0 : dateObj.getUTCDay(); // 0 = Sun, 1 = Mon ... 6 = Sat
+  const isoDay = dayOfWeek === 0 ? 7 : dayOfWeek; // 1 = Mon ... 7 = Sun
+  const dayNamesShort = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  const dayNamesFull = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const dayNameShort = dayNamesShort[dayOfWeek];
+  const dayNameFull = dayNamesFull[dayOfWeek];
+
+  if (str === 'weekdays' && isoDay >= 1 && isoDay <= 5) return true;
+  if (str === 'weekends' && (isoDay === 6 || isoDay === 7)) return true;
+
+  const tokens = str.split(/[,;:\s]+/).map((s) => s.trim().toLowerCase());
+  return (
+    tokens.includes(String(isoDay)) ||
+    tokens.includes(String(dayOfWeek)) ||
+    tokens.includes(dayNameShort) ||
+    tokens.includes(dayNameFull)
+  );
+};
+
 // ── Core Schedule Fetching Helper for Route + Stop Pair ────────
 const fetchSchedulesForRouteStopPair = async ({ routeId, pickupStopId, dropStopId, travelDate, passengers }) => {
   const reqPassengers = parseInt(passengers || 1, 10);
@@ -302,32 +338,10 @@ const fetchSchedulesForRouteStopPair = async ({ routeId, pickupStopId, dropStopI
     });
   }
 
-  const searchDateObj = new Date(searchDateStr);
-  const weekdays = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-  const weekday = weekdays[isNaN(searchDateObj.getDay()) ? 1 : searchDateObj.getDay()];
-
-  let dayFilteredSchedules = (rawSchedules || []).filter((sch) => {
-    if (sch.trip_date) return String(sch.trip_date).slice(0, 10) === searchDateStr;
-    if (!sch.operating_days) return true;
-    const operatingDays = String(sch.operating_days).toLowerCase().split(/[,:]/).map((d) => d.trim());
-    return operatingDays.includes(weekday);
-  });
+  let dayFilteredSchedules = (rawSchedules || []).filter((sch) => isScheduleActiveOnDate(sch, searchDateStr));
 
   if (dayFilteredSchedules.length === 0) {
-    const defaultTimes = ['07:30:00', '10:00:00', '13:30:00', '16:30:00', '19:30:00'];
-    dayFilteredSchedules = defaultTimes.map((timeStr, idx) => ({
-      id: Number(route.id) * 1000 + (idx + 1),
-      route_id: Number(route.id),
-      schedule_code: `SCH-${route.id}-${idx + 1}`,
-      departure_time: timeStr,
-      trip_date: searchDateStr,
-      operating_days: 'Daily',
-      status: 'Active',
-      bus_type: { id: 1, name: 'AC Executive Shuttle', total_seats: 40 },
-      seat_capacity: 40,
-      booked_seats: 0,
-      is_virtual: true,
-    }));
+    return { success: false, reason: 'NO_SCHEDULES_FOUND', schedules: [] };
   }
 
   const now = new Date();
@@ -588,9 +602,23 @@ exports.getSchedules = async (req, res, next) => {
       const foundSchedules = scheduleResults.flatMap((result) => result.success ? result.schedules : []);
 
       if (foundSchedules.length === 0) {
+        const failureReason = scheduleResults.find((result) => result.reason)?.reason;
+        let failureMessage = 'No schedules found';
+        if (failureReason === 'ROUTE_INACTIVE') {
+          failureMessage = 'Route inactive or not found';
+        } else if (failureReason === 'INVALID_STOPS') {
+          failureMessage = 'Pickup or drop stop invalid for route';
+        } else if (failureReason === 'INVALID_SEQUENCE') {
+          failureMessage = 'Invalid stop sequence: drop stop must be after pickup stop';
+        } else if (failureReason === 'SAME_STOP') {
+          failureMessage = 'Pickup and drop stop cannot be the same';
+        } else if (failureReason === 'INVALID_PASSENGERS') {
+          failureMessage = 'Invalid passenger count';
+        }
+
         return res.json({
           status: false,
-          message: scheduleResults.find((result) => result.reason)?.reason || 'No schedules found',
+          message: failureMessage,
           search: {
             route_id: Number(route_id),
             pickup_stop_id: Number(pickup_stop_id),

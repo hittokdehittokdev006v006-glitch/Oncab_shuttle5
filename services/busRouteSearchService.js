@@ -52,7 +52,7 @@ const formatDateStr = (val) => {
  * Check if schedule can operate on a given date
  */
 const scheduleCanRunOnDate = (sch, searchDateStr) => {
-  if (!sch) return false;
+  if (!sch || !searchDateStr) return false;
   const validFrom = formatDateStr(sch.valid_from);
   const validUntil = formatDateStr(sch.valid_until);
   const tripDate = formatDateStr(sch.trip_date);
@@ -63,12 +63,27 @@ const scheduleCanRunOnDate = (sch, searchDateStr) => {
 
   if (!sch.operating_days) return true;
 
-  const searchDateObj = new Date(`${searchDateStr}T00:00:00.000Z`);
-  const weekdays = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-  const weekday = weekdays[isNaN(searchDateObj.getUTCDay()) ? 0 : searchDateObj.getUTCDay()];
+  const str = String(sch.operating_days).toLowerCase().trim();
+  if (['daily', 'all', 'everyday', '7', '1,2,3,4,5,6,7'].includes(str)) return true;
 
-  const operatingDays = String(sch.operating_days).toLowerCase().split(/[,:]/).map((d) => d.trim());
-  return operatingDays.includes(weekday);
+  const searchDateObj = new Date(`${searchDateStr}T00:00:00.000Z`);
+  const dayOfWeek = isNaN(searchDateObj.getUTCDay()) ? 0 : searchDateObj.getUTCDay(); // 0 = Sun, 1 = Mon ... 6 = Sat
+  const isoDay = dayOfWeek === 0 ? 7 : dayOfWeek; // 1 = Mon ... 7 = Sun
+  const dayNamesShort = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  const dayNamesFull = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const dayNameShort = dayNamesShort[dayOfWeek];
+  const dayNameFull = dayNamesFull[dayOfWeek];
+
+  if (str === 'weekdays' && isoDay >= 1 && isoDay <= 5) return true;
+  if (str === 'weekends' && (isoDay === 6 || isoDay === 7)) return true;
+
+  const tokens = str.split(/[,;:\s]+/).map((s) => s.trim().toLowerCase());
+  return (
+    tokens.includes(String(isoDay)) ||
+    tokens.includes(String(dayOfWeek)) ||
+    tokens.includes(dayNameShort) ||
+    tokens.includes(dayNameFull)
+  );
 };
 
 /**
@@ -415,23 +430,13 @@ class BusRouteSearchService {
       matchingSchedules = rawSchedules.filter((sch) => scheduleCanRunOnDate(sch, travelDate));
     }
 
-    // Fallback: If no explicit schedules exist in database for this route & date, generate default daily schedules
     if (matchingSchedules.length === 0) {
-      const defaultTimes = ['07:30:00', '10:00:00', '13:30:00', '16:30:00', '19:30:00'];
-      matchingSchedules = defaultTimes.map((timeStr, idx) => ({
-        id: Number(route.id) * 1000 + (idx + 1),
-        route_id: Number(route.id),
-        schedule_code: `SCH-${route.id}-${idx + 1}`,
-        departure_time: timeStr,
-        trip_date: travelDate,
-        operating_days: 'Daily',
-        status: 'Active',
-        bus_type: { id: 1, name: 'AC Executive Shuttle', total_seats: 40 },
-        seat_capacity: 40,
-        booked_seats: 0,
-        is_virtual: true,
-      }));
-      rawSchedules = matchingSchedules;
+      return {
+        success: false,
+        reason: 'NO_SCHEDULES_FOUND',
+        schedules: [],
+        rawSchedules: [],
+      };
     }
 
     // Stop duration calculation
@@ -471,15 +476,12 @@ class BusRouteSearchService {
       const schId = Number(sch.id);
       const busCap = sch.bus_type?.total_seats || sch.seat_capacity || 40;
 
-      let bookedCount = 0;
-      if (!sch.is_virtual) {
-        bookedCount = await Booking.count({
-          where: {
-            trip_id: schId,
-            booking_status: { [Op.ne]: 'cancelled' },
-          },
-        });
-      }
+      const bookedCount = await Booking.count({
+        where: {
+          trip_id: schId,
+          booking_status: { [Op.ne]: 'cancelled' },
+        },
+      });
 
       const availSeats = Math.max(0, busCap - bookedCount);
       if (availSeats < reqPassengers) continue;
