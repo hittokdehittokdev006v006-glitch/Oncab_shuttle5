@@ -49,7 +49,9 @@ router.post('/banners', bannerController.getActiveBanners);
 router.post('/banners/:id/click', bannerController.trackClick);
 
 // User Bookings (Can be made public with passenger_mobile)
+router.get('/wallet/balance', walletController.balance);
 router.post('/wallet/balance', walletController.balance);
+router.get('/wallet/transactions', walletController.transactions);
 router.post('/wallet/transactions', walletController.transactions);
 router.get('/user-bookings', busController.getUserBookings);
 router.post('/user-bookings', busController.getUserBookings);
