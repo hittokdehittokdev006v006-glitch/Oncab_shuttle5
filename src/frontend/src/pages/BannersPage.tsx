@@ -401,13 +401,37 @@ export const BannersPage: React.FC<BannersPageProps> = ({ onNotify }) => {
     setMutedCardMap((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
-  // Resolve media URL for rendering
+  // Resolve media URL for rendering - supports absolute URLs, relative URLs, and subpath deployments (/bus-operator-dev/)
   const getDisplayMediaUrl = (banner: Banner) => {
-    return banner.media_full_url || banner.media_url;
+    if (banner.media_full_url && /^https?:\/\//i.test(banner.media_full_url)) {
+      return banner.media_full_url;
+    }
+    const target = banner.media_full_url || banner.media_url;
+    if (!target) return '';
+    if (/^https?:\/\//i.test(target)) return target;
+
+    const clean = target.replace(/^\/+/, '');
+    const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
+    if (pathname.includes('/bus-operator-dev')) {
+      return `/bus-operator-dev/${clean}`;
+    }
+    return `/${clean}`;
   };
 
   const getDisplayThumbUrl = (banner: Banner) => {
-    return banner.thumbnail_full_url || banner.thumbnail_url;
+    if (banner.thumbnail_full_url && /^https?:\/\//i.test(banner.thumbnail_full_url)) {
+      return banner.thumbnail_full_url;
+    }
+    const target = banner.thumbnail_full_url || banner.thumbnail_url;
+    if (!target) return '';
+    if (/^https?:\/\//i.test(target)) return target;
+
+    const clean = target.replace(/^\/+/, '');
+    const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
+    if (pathname.includes('/bus-operator-dev')) {
+      return `/bus-operator-dev/${clean}`;
+    }
+    return `/${clean}`;
   };
 
   // Computed CTR
@@ -713,6 +737,11 @@ export const BannersPage: React.FC<BannersPageProps> = ({ onNotify }) => {
                         alt={banner.title}
                         className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
                         onError={(e: any) => {
+                          if (!e.target.dataset.triedSubpath && banner.media_url?.startsWith('/uploads/')) {
+                            e.target.dataset.triedSubpath = 'true';
+                            e.target.src = `/bus-operator-dev${banner.media_url}`;
+                            return;
+                          }
                           e.target.src = 'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?auto=format&fit=crop&w=800&q=80';
                         }}
                       />
@@ -878,7 +907,17 @@ export const BannersPage: React.FC<BannersPageProps> = ({ onNotify }) => {
                           <Play size={16} className="text-purple-300" />
                         </div>
                       ) : (
-                        <img src={mediaUrl} alt="" className="w-full h-full object-cover" />
+                        <img
+                          src={mediaUrl}
+                          alt=""
+                          className="w-full h-full object-cover"
+                          onError={(e: any) => {
+                            if (!e.target.dataset.triedSubpath && banner.media_url?.startsWith('/uploads/')) {
+                              e.target.dataset.triedSubpath = 'true';
+                              e.target.src = `/bus-operator-dev${banner.media_url}`;
+                            }
+                          }}
+                        />
                       )}
                     </div>
                   </Td>
