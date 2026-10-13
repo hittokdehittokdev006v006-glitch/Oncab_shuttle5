@@ -3,11 +3,16 @@
 const { CustomerUser, WalletTransaction } = require('../models');
 
 const resolvePassenger = async (req) => {
-  const passengerId = req.body?.passenger_id;
-  const mobile = String(req.body?.passenger_mobile || '').trim();
-  if (!passengerId || !mobile) return { error: 'passenger_id and passenger_mobile are required' };
+  const passengerId = req.body?.passenger_id || req.query?.passenger_id;
+  const mobile = String(req.body?.passenger_mobile || req.query?.passenger_mobile || req.body?.mobile || req.query?.mobile || '').trim();
 
-  const passenger = await CustomerUser.findOne({ where: { id: passengerId, mobile } });
+  if (!passengerId && !mobile) return { error: 'passenger_id or passenger_mobile is required' };
+
+  const where = {};
+  if (passengerId) where.id = passengerId;
+  if (mobile) where.mobile = mobile;
+
+  const passenger = await CustomerUser.findOne({ where });
   if (!passenger) return { error: 'Passenger account could not be verified', status: 404 };
   if (passenger.status === 'Inactive' || passenger.block_status === 'Block') {
     return { error: 'Passenger account is not active', status: 403 };

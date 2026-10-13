@@ -1343,7 +1343,23 @@ exports.cancelUserBooking = async (req, res, next) => {
       await trip.decrement('booked_seats', { by: booking.total_seats, transaction: t });
     }
 
-    if (booking.payment_status === 'paid') {
+    const refundAmount = Number(booking.final_amount || 0);
+    const refund_to = String(
+      req.body?.refund_to ||
+      req.body?.refund_method ||
+      req.body?.refund_mode ||
+      req.query?.refund_to ||
+      req.query?.refund_method ||
+      req.query?.refund_mode ||
+      'bank'
+    ).toLowerCase();
+    const isWalletRefund = refund_to === 'wallet';
+
+    let refundRecord = null;
+    let walletCredited = false;
+    let walletBalanceAfter = null;
+
+    if (booking.payment_status === 'paid' && refundAmount > 0) {
       const passenger = booking.passenger_id
         ? await CustomerUser.findByPk(booking.passenger_id, { transaction: t })
         : await CustomerUser.findOne({ where: { mobile: booking.passenger_mobile }, transaction: t });
@@ -1352,29 +1368,80 @@ exports.cancelUserBooking = async (req, res, next) => {
         order: [['created_at', 'DESC']],
         transaction: t,
       });
-      await Refund.create({
-        booking_id: booking.id,
-        payment_id: payment?.id || null,
-        passenger_id: passenger?.id || booking.passenger_id,
-        refund_reference: `REF-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-        refund_amount: booking.final_amount,
-        refund_reason: cancellation_reason || 'Cancelled by user',
-        status: 'pending',
-      }, { transaction: t });
+      const refundRef = `REF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+      if (isWalletRefund && passenger) {
+        const currentBalance = Number(passenger.wallet_balance || 0);
+        walletBalanceAfter = Math.round((currentBalance + refundAmount) * 100) / 100;
+        await passenger.update({ wallet_balance: walletBalanceAfter }, { transaction: t });
+
+        await WalletTransaction.create({
+          passenger_id: passenger.id,
+          type: 'credit',
+          amount: refundAmount,
+          balance_after: walletBalanceAfter,
+          source: 'refund',
+          reference_type: 'cancellation_refund',
+          reference_id: refundRef,
+          description: `Refund for cancelled booking ${booking.booking_reference}`,
+        }, { transaction: t });
+
+        refundRecord = await Refund.create({
+          booking_id: booking.id,
+          payment_id: payment?.id || null,
+          passenger_id: passenger.id,
+          refund_reference: refundRef,
+          refund_amount: refundAmount,
+          refund_reason: cancellation_reason || 'Cancelled by user',
+          refund_method: 'wallet',
+          status: 'completed',
+          processed_at: new Date(),
+          notes: `Credited to user wallet. Balance after: ₹${walletBalanceAfter}`,
+        }, { transaction: t });
+
+        walletCredited = true;
+        await booking.update({ payment_status: 'refunded' }, { transaction: t });
+        if (payment) await payment.update({ status: 'refunded' }, { transaction: t });
+      } else {
+        refundRecord = await Refund.create({
+          booking_id: booking.id,
+          payment_id: payment?.id || null,
+          passenger_id: passenger?.id || booking.passenger_id,
+          refund_reference: refundRef,
+          refund_amount: refundAmount,
+          refund_reason: cancellation_reason || 'Cancelled by user',
+          refund_method: 'payu',
+          status: 'pending',
+        }, { transaction: t });
+      }
     }
 
     await t.commit();
 
+    const responseMessage = refundRecord
+      ? walletCredited
+        ? `Booking cancelled successfully. Refund of ₹${refundAmount} has been credited to your wallet immediately.`
+        : `Booking cancelled successfully. Refund request of ₹${refundAmount} to bank via PayU is pending processing.`
+      : 'Booking cancelled successfully';
+
     res.json({
       status: 200,
       success: true,
-      message: 'Booking cancelled successfully',
+      message: responseMessage,
       data: {
         booking_id: booking.id,
         booking_reference: booking.booking_reference,
         booking_status: booking.booking_status,
         payment_status: booking.payment_status,
         cancelled_at: booking.cancelled_at,
+        refund: refundRecord ? {
+          refund_id: refundRecord.id,
+          refund_reference: refundRecord.refund_reference,
+          refund_amount: Number(refundRecord.refund_amount),
+          refund_status: refundRecord.status,
+          refund_method: refundRecord.refund_method,
+          ...(walletCredited ? { wallet_balance: walletBalanceAfter } : {}),
+        } : null,
       },
     });
   } catch (err) {
@@ -1847,6 +1914,18 @@ exports.cancelBooking = async (req, res, next) => {
       req.body?.passenger_mobile ||
       req.query?.passenger_mobile;
 
+    const refund_to = String(
+      req.body?.refund_to ||
+      req.body?.refund_method ||
+      req.body?.refund_mode ||
+      req.query?.refund_to ||
+      req.query?.refund_method ||
+      req.query?.refund_mode ||
+      'bank'
+    ).toLowerCase();
+
+    const isWalletRefund = refund_to === 'wallet';
+
     // --------------------------------------------------
     // 1. VALIDATE BOOKING IDENTIFIER
     // --------------------------------------------------
@@ -2103,15 +2182,22 @@ exports.cancelBooking = async (req, res, next) => {
     }
 
     // --------------------------------------------------
-    // 9. CREATE REFUND REQUEST
-    // Actual PayU refund remains in the admin refund flow.
+    // 9. CREATE REFUND REQUEST (WALLET OR PAYU/BANK)
     // --------------------------------------------------
     let refundRecord = null;
+    let walletCredited = false;
+    let walletBalanceAfter = null;
+
+    const refundAmount = Number(booking.final_amount || 0);
 
     if (
       booking.payment_status === 'paid' &&
-      Number(booking.final_amount) > 0
+      refundAmount > 0
     ) {
+      const passenger = booking.passenger_id
+        ? await CustomerUser.findByPk(booking.passenger_id, { transaction: t })
+        : await CustomerUser.findOne({ where: { mobile: booking.passenger_mobile }, transaction: t });
+
       const payment = await Payment.findOne({
         where: {
           booking_id: booking.id,
@@ -2124,19 +2210,61 @@ exports.cancelBooking = async (req, res, next) => {
       const refundRef =
         `REF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-      refundRecord = await Refund.create(
-        {
-          booking_id: booking.id,
-          payment_id: payment?.id || null,
-          passenger_id: booking.passenger_id || null,
-          refund_reference: refundRef,
-          refund_amount: booking.final_amount,
-          refund_reason: cancellation_reason,
-          refund_method: payment?.payu_mihpayid ? 'payu' : null,
-          status: 'pending',
-        },
-        { transaction: t }
-      );
+      if (isWalletRefund && passenger) {
+        // Direct instant credit to passenger's wallet
+        const currentBalance = Number(passenger.wallet_balance || 0);
+        walletBalanceAfter = Math.round((currentBalance + refundAmount) * 100) / 100;
+
+        await passenger.update({ wallet_balance: walletBalanceAfter }, { transaction: t });
+
+        await WalletTransaction.create({
+          passenger_id: passenger.id,
+          type: 'credit',
+          amount: refundAmount,
+          balance_after: walletBalanceAfter,
+          source: 'refund',
+          reference_type: 'cancellation_refund',
+          reference_id: refundRef,
+          description: `Refund for cancelled booking ${booking.booking_reference}`,
+        }, { transaction: t });
+
+        refundRecord = await Refund.create(
+          {
+            booking_id: booking.id,
+            payment_id: payment?.id || null,
+            passenger_id: passenger.id,
+            refund_reference: refundRef,
+            refund_amount: refundAmount,
+            refund_reason: cancellation_reason,
+            refund_method: 'wallet',
+            status: 'completed',
+            processed_at: new Date(),
+            notes: `Credited to user wallet. Balance after: ₹${walletBalanceAfter}`,
+          },
+          { transaction: t }
+        );
+
+        walletCredited = true;
+        await booking.update({ payment_status: 'refunded' }, { transaction: t });
+        if (payment) {
+          await payment.update({ status: 'refunded' }, { transaction: t });
+        }
+      } else {
+        // Gateway Bank Refund via PayU (queued for admin processing or PayU gateway initiation)
+        refundRecord = await Refund.create(
+          {
+            booking_id: booking.id,
+            payment_id: payment?.id || null,
+            passenger_id: passenger?.id || booking.passenger_id || null,
+            refund_reference: refundRef,
+            refund_amount: refundAmount,
+            refund_reason: cancellation_reason,
+            refund_method: 'payu',
+            status: 'pending',
+          },
+          { transaction: t }
+        );
+      }
     }
 
     // --------------------------------------------------
@@ -2144,12 +2272,16 @@ exports.cancelBooking = async (req, res, next) => {
     // --------------------------------------------------
     await t.commit();
 
+    const responseMessage = refundRecord
+      ? walletCredited
+        ? `Booking cancelled successfully. Refund of ₹${refundAmount} has been credited to your wallet immediately.`
+        : `Booking cancelled successfully. Refund request of ₹${refundAmount} to bank via PayU is pending processing.`
+      : 'Booking cancelled successfully';
+
     return res.status(200).json({
       status: 200,
       success: true,
-      message: refundRecord
-        ? 'Booking cancelled. Refund request is pending admin processing through PayU.'
-        : 'Booking cancelled successfully',
+      message: responseMessage,
       data: {
         booking_id: booking.id,
         booking_reference: booking.booking_reference,
@@ -2161,6 +2293,7 @@ exports.cancelBooking = async (req, res, next) => {
               refund_amount: Number(refundRecord.refund_amount),
               refund_status: refundRecord.status,
               refund_method: refundRecord.refund_method,
+              ...(walletCredited ? { wallet_balance: walletBalanceAfter } : {}),
             }
           : null,
       },
