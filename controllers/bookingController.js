@@ -286,7 +286,11 @@ exports.create = async (req, res, next) => {
     await t.commit();
     const created = await Booking.findByPk(booking.id, { include: BOOKING_INCLUDE });
     const createdData = created.toJSON();
-    res.status(201).json({ success: true, message: final_amount <= 0 ? 'Booking confirmed' : 'Booking created and awaiting payment', data: { booking_id: created.id, ...createdData } });
+    // Determine used_by sources
+    const used_by = [];
+    if (appliedCoupon) used_by.push('coupon');
+    if (payment_method && final_amount > 0) used_by.push('payu');
+    res.status(201).json({ success: true, message: final_amount <= 0 ? 'Booking confirmed' : 'Booking created and awaiting payment', data: { booking_id: created.id, ...createdData, used_by } });
   } catch (err) {
     await t.rollback();
     next(err);
@@ -309,17 +313,20 @@ exports.cancel = async (req, res, next) => {
     if (trip && wasSeatAllocated) await trip.decrement('booked_seats', { by: booking.total_seats, transaction: t });
 
     // Auto-create refund if payment was captured
+    let refundRecord = null;
     if (booking.payment_status === 'paid') {
       const passenger = booking.passenger_id
         ? await CustomerUser.findByPk(booking.passenger_id, { transaction: t })
         : await CustomerUser.findOne({ where: { mobile: booking.passenger_mobile }, transaction: t });
       const payment = await Payment.findOne({ where: { booking_id: booking.id, status: ['captured', 'partial_refund'] }, order: [['created_at', 'DESC']], transaction: t });
       const refund_reference = `REF-${Date.now()}`;
-      await Refund.create({ booking_id: booking.id, payment_id: payment?.id || null, passenger_id: passenger?.id || booking.passenger_id, refund_reference, refund_amount: booking.final_amount, refund_reason: cancellation_reason || 'Cancelled by admin', status: 'pending', initiated_by: req.user?.id }, { transaction: t });
+      refundRecord = await Refund.create({ booking_id: booking.id, payment_id: payment?.id || null, passenger_id: passenger?.id || booking.passenger_id, refund_reference, refund_amount: booking.final_amount, refund_reason: cancellation_reason || 'Cancelled by admin', status: 'pending', initiated_by: req.user?.id }, { transaction: t });
     }
 
     await t.commit();
-    res.json({ success: true, message: 'Booking cancelled', data: booking });
+    const responseData = { booking };
+    if (refundRecord) responseData.refund = refundRecord;
+    res.json({ success: true, message: 'Booking cancelled', data: responseData });
   } catch (err) {
     await t.rollback();
     next(err);
@@ -382,19 +389,46 @@ exports.track = async (req, res, next) => {
     const driver = trip.driver || {};
     const driverDetail = driver.details || {};
     const vehicle = trip.vehicle || {};
-    const tripStops = (trip.route?.stops || [])
-      .slice()
-      .sort((stopA, stopB) => (Number(stopA.stop_sequence) || 0) - (Number(stopB.stop_sequence) || 0))
-      .map((stop) => ({
-        id: stop.id,
-        stop_name: stop.stop_name,
-        stop_code: stop.stop_code,
-        latitude: stop.latitude == null ? null : Number(stop.latitude),
-        longitude: stop.longitude == null ? null : Number(stop.longitude),
-        address: stop.address || null,
-        landmark: stop.landmark || null,
-        stop_sequence: stop.stop_sequence,
-      }));
+    // Use route_stops for ordered stops, fallback to legacy stops
+    const tripStops = await (async () => {
+      if (trip && trip.route_id) {
+        const routeStops = await RouteStop.findAll({
+          where: { route_id: trip.route_id },
+          include: [{ model: Stop, as: 'stop' }],
+          order: [['stop_sequence', 'ASC']],
+        });
+        if (routeStops && routeStops.length) {
+          return routeStops.map(rs => {
+            const s = rs.stop ? rs.stop.toJSON() : {};
+            return {
+              id: rs.stop_id,
+              stop_name: s.stop_name,
+              stop_code: s.stop_code,
+              latitude: s.latitude ? Number(s.latitude) : null,
+              longitude: s.longitude ? Number(s.longitude) : null,
+              address: s.address || null,
+              landmark: s.landmark || null,
+              stop_sequence: rs.stop_sequence,
+            };
+          });
+        }
+      }
+      // Fallback to legacy stops if no route_stops
+      return (trip.route?.stops || [])
+        .slice()
+        .sort((a, b) => (Number(a.stop_sequence) || 0) - (Number(b.stop_sequence) || 0))
+        .map(stop => ({
+          id: stop.id,
+          stop_name: stop.stop_name,
+          stop_code: stop.stop_code,
+          latitude: stop.latitude == null ? null : Number(stop.latitude),
+          longitude: stop.longitude == null ? null : Number(stop.longitude),
+          address: stop.address || null,
+          landmark: stop.landmark || null,
+          stop_sequence: stop.stop_sequence,
+        }));
+    })();
+
     const originStop = bookingData.origin_stop || {};
     const destinationStop = bookingData.destination_stop || {};
 
