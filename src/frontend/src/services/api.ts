@@ -70,7 +70,8 @@ export const authAPI = {
 };
 
 export const dashboardAPI = {
-  stats: () => api.get('/dashboard/stats'),
+  stats: (params?: object) => api.get('/dashboard/stats', { params }),
+  boardedPassengers: (params?: object) => api.get('/dashboard/boarded-passengers', { params }),
   revenueReport: (params?: object) => api.get('/dashboard/revenue-report', { params }),
   auditLogs: (params?: object) => api.get('/dashboard/audit-logs', { params }),
 };

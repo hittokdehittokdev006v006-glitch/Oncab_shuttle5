@@ -121,11 +121,25 @@ export const Badge: React.FC<BadgeProps> = ({ children, color = 'gray' }) => {
 export const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   const statusMap: Record<string, BadgeProps['color']> = {
     Active: 'green', active: 'green', Approve: 'green', confirmed: 'green', paid: 'green', completed: 'green', Online: 'green', Unblock: 'green', Valid: 'green',
+    boarded: 'green', Boarded: 'green',
+    not_boarded: 'yellow', 'not-boarded': 'yellow', 'Not Boarded': 'yellow',
+    no_show: 'purple', 'no-show': 'purple', 'No Show': 'purple',
     Inactive: 'gray', Offline: 'gray', Incomplete: 'gray', pending: 'yellow', Pending: 'yellow', Scheduled: 'blue',
     cancelled: 'red', Cancelled: 'red', failed: 'red', Failed: 'red', Block: 'red', Reject: 'red', Expired: 'red',
     refunded: 'purple', partial_refund: 'purple', processing: 'blue', 'Under Maintenance': 'orange', Delayed: 'orange',
   };
-  return <Badge color={statusMap[status] || 'gray'}>{status}</Badge>;
+  const labelMap: Record<string, string> = {
+    boarded: 'Boarded',
+    not_boarded: 'Not Boarded',
+    no_show: 'No Show',
+    confirmed: 'Confirmed',
+    cancelled: 'Cancelled',
+    completed: 'Completed',
+    pending: 'Pending',
+    paid: 'Paid',
+    partial_refund: 'Partial Refund',
+  };
+  return <Badge color={statusMap[status] || 'gray'}>{labelMap[status] || status}</Badge>;
 };
 
 // ── Table ──────────────────────────────────────────────────

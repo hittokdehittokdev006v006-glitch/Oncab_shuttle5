@@ -10,6 +10,7 @@ interface RouteStopItem {
   latitude: string;
   longitude: string;
   stop_sequence: number;
+  travel_time_minutes: number;
   address: string;
 }
 
@@ -30,6 +31,7 @@ interface Stop {
   id: number;
   stop_name: string;
   stop_sequence: number;
+  travel_time_minutes?: number;
   stop_code?: string;
   address?: string;
   latitude?: number;
@@ -271,6 +273,7 @@ export const RouteCreationPage: React.FC<RouteCreationPageProps> = ({ onNotify }
           latitude: s.latitude != null ? String(s.latitude) : '',
           longitude: s.longitude != null ? String(s.longitude) : '',
           stop_sequence: idx + 1,
+          travel_time_minutes: Number(s.travel_time_minutes) || 0,
           address: s.address || '',
         }))
       );
@@ -299,6 +302,7 @@ export const RouteCreationPage: React.FC<RouteCreationPageProps> = ({ onNotify }
         latitude: stop.latitude != null ? String(stop.latitude) : '',
         longitude: stop.longitude != null ? String(stop.longitude) : '',
         stop_sequence: prev.length + 1,
+        travel_time_minutes: 0,
         address: stop.address || '',
       },
     ]);
@@ -359,6 +363,7 @@ export const RouteCreationPage: React.FC<RouteCreationPageProps> = ({ onNotify }
             latitude: s.latitude != null ? String(s.latitude) : '',
             longitude: s.longitude != null ? String(s.longitude) : '',
             stop_sequence: prev.length + newItems.length + 1,
+            travel_time_minutes: 0,
             address: s.address || '',
           });
         }
@@ -430,6 +435,7 @@ export const RouteCreationPage: React.FC<RouteCreationPageProps> = ({ onNotify }
         latitude: s.latitude ? parseFloat(s.latitude) : null,
         longitude: s.longitude ? parseFloat(s.longitude) : null,
         stop_sequence: idx + 1,
+        travel_time_minutes: idx === 0 ? 0 : Math.max(0, Number(s.travel_time_minutes) || 0),
         address: s.address || null,
       }));
 
@@ -856,6 +862,18 @@ export const RouteCreationPage: React.FC<RouteCreationPageProps> = ({ onNotify }
                           {stop.latitude && stop.longitude ? `(${stop.latitude}, ${stop.longitude})` : 'No coordinates'}
                         </div>
                       </div>
+                      {index > 0 && (
+                        <label className="text-[10px] text-slate-400 shrink-0 flex flex-col gap-1">
+                          From previous (min)
+                          <input
+                            type="number"
+                            min="0"
+                            value={stop.travel_time_minutes ?? 0}
+                            onChange={(e) => setStopsList((prev) => prev.map((item, idx) => idx === index ? { ...item, travel_time_minutes: Math.max(0, Number(e.target.value) || 0) } : item))}
+                            className="w-20 rounded bg-slate-900 border border-slate-600 px-2 py-1 text-xs text-white"
+                          />
+                        </label>
+                      )}
                       <div className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"

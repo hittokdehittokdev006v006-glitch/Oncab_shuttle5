@@ -1,7 +1,7 @@
 'use strict';
 
 const { Op, fn, col, literal } = require('sequelize');
-const { Booking, Trip, Driver, Vehicle, Passenger, CustomerUser, Payment, Refund, Route, AuditLog, AdminUser, Role } = require('../models');
+const { Booking, Trip, Driver, Vehicle, Passenger, CustomerUser, Payment, Refund, Route, Stop, AuditLog, AdminUser, Role } = require('../models');
 const sequelize = require('../config/database');
 const { hasRole } = require('../utils/roles');
 const SeatReservationService = require('../services/seatReservationService');
@@ -38,9 +38,52 @@ const addMoney = (current, amount) => Math.round((current + amount + Number.EPSI
 exports.stats = async (req, res, next) => {
   try {
     const today = new Date().toISOString().split('T')[0];
-    const thisMonth = new Date(); thisMonth.setDate(1);
     const isAdmin = hasRole(req.user, 'admin');
     const isOwner = hasRole(req.user, 'owner');
+
+    const {
+      from_date: reqFromDate,
+      to_date: reqToDate,
+      preset = 'all_time',
+      date_field = 'travel_date',
+      boarding_status: reqBoardingStatus,
+    } = req.query;
+
+    // Resolve date range based on preset or explicit dates
+    let fromDate = reqFromDate || null;
+    let toDate = reqToDate || null;
+
+    if (preset && preset !== 'custom' && preset !== 'all_time') {
+      const now = new Date();
+      if (preset === 'today') {
+        fromDate = today;
+        toDate = today;
+      } else if (preset === 'yesterday') {
+        const y = new Date();
+        y.setDate(y.getDate() - 1);
+        const yStr = y.toISOString().split('T')[0];
+        fromDate = yStr;
+        toDate = yStr;
+      } else if (preset === 'this_week') {
+        const d = new Date();
+        const day = d.getDay();
+        const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+        const monday = new Date(d.setDate(diff));
+        fromDate = monday.toISOString().split('T')[0];
+        toDate = today;
+      } else if (preset === 'this_month') {
+        const m = new Date();
+        m.setDate(1);
+        fromDate = m.toISOString().split('T')[0];
+        toDate = today;
+      } else if (preset === 'last_30_days') {
+        const past = new Date();
+        past.setDate(past.getDate() - 29);
+        fromDate = past.toISOString().split('T')[0];
+        toDate = today;
+      }
+    }
+
     const ownerVehicleWhere = isOwner ? { owner_id: req.user.id } : {};
     const ownerDriverWhere = isOwner ? { owner_id: req.user.id } : {};
     const ownedVehicleRows = isOwner ? await Vehicle.findAll({ attributes: ['id'], where: ownerVehicleWhere, raw: true }) : [];
@@ -54,15 +97,34 @@ exports.stats = async (req, res, next) => {
       ? (await Trip.findAll({ attributes: ['id'], where: ownerTripWhere, raw: true })).map((trip) => trip.id)
       : [];
     const ownerBookingWhere = isOwner ? { trip_id: { [Op.in]: ownerTripIds } } : {};
-    const ownerBookingIds = isOwner
-      ? (await Booking.findAll({ attributes: ['id'], where: ownerBookingWhere, raw: true })).map((booking) => booking.id)
-      : [];
+
+    // Filtered date condition for Bookings, Trips, and Payments
+    const filteredBookingWhere = { ...ownerBookingWhere };
+    const filteredTripWhere = { ...ownerTripWhere };
+    const filteredPaymentWhere = { status: 'captured' };
+
+    if (fromDate && toDate) {
+      if (date_field === 'created_at') {
+        const start = new Date(`${fromDate}T00:00:00`);
+        const end = new Date(`${toDate}T23:59:59.999`);
+        filteredBookingWhere.created_at = { [Op.between]: [start, end] };
+        filteredTripWhere.created_at = { [Op.between]: [start, end] };
+        filteredPaymentWhere.created_at = { [Op.between]: [start, end] };
+      } else {
+        filteredBookingWhere.travel_date = { [Op.between]: [fromDate, toDate] };
+        filteredTripWhere.trip_date = { [Op.between]: [fromDate, toDate] };
+        filteredPaymentWhere.created_at = {
+          [Op.between]: [new Date(`${fromDate}T00:00:00`), new Date(`${toDate}T23:59:59.999`)],
+        };
+      }
+    }
+
     let ownerRevenueSummary = {};
     if (isOwner && ownerTripIds.length) {
       const eligibleBookings = await Booking.findAll({
         attributes: ['id', 'trip_id', 'travel_date', 'seat_numbers', 'total_seats', 'total_fare', 'created_at'],
         where: {
-          ...ownerBookingWhere,
+          ...filteredBookingWhere,
           booking_status: 'confirmed',
           payment_status: 'paid',
           boarding_status: 'boarded',
@@ -105,33 +167,46 @@ exports.stats = async (req, res, next) => {
         revenue: { total: allRevenue.revenue, today: todayRevenue.revenue, distinctSeats: allRevenue.distinctSeats },
       };
     }
+
     const [
       totalTrips, todayTrips, activeTrips,
-      totalBookings, todayBookings, confirmedBookings,
+      totalBookings, todayBookings, confirmedBookings, cancelledBookings, completedBookings,
+      boardedBookings, notBoardedBookings, noShowBookings,
       totalDrivers, activeDrivers,
       totalVehicles, activeVehicles,
       totalPassengers,
-      cancelledBookings,
+      allTimeBookings,
     ] = await Promise.all([
-      Trip.count({ where: ownerTripWhere }),
+      Trip.count({ where: filteredTripWhere }),
       Trip.count({ where: { ...ownerTripWhere, trip_date: today } }),
       Trip.count({ where: { ...ownerTripWhere, status: 'Active' } }),
-      Booking.count({ where: ownerBookingWhere }),
+      Booking.count({ where: filteredBookingWhere }),
       Booking.count({ where: { ...ownerBookingWhere, created_at: { [Op.gte]: new Date(today) } } }),
-      Booking.count({ where: { ...ownerBookingWhere, booking_status: 'confirmed' } }),
+      Booking.count({ where: { ...filteredBookingWhere, booking_status: 'confirmed' } }),
+      Booking.count({ where: { ...filteredBookingWhere, booking_status: 'cancelled' } }),
+      Booking.count({ where: { ...filteredBookingWhere, booking_status: 'completed' } }),
+      Booking.count({ where: { ...filteredBookingWhere, boarding_status: 'boarded' } }),
+      Booking.count({ where: { ...filteredBookingWhere, boarding_status: 'not_boarded' } }),
+      Booking.count({ where: { ...filteredBookingWhere, boarding_status: 'no_show' } }),
       Driver.count({ where: ownerDriverWhere }),
       Driver.count({ where: { ...ownerDriverWhere, status: 'Approve', block_status: 'Unblock' } }),
       Vehicle.count({ where: ownerVehicleWhere }),
       Vehicle.count({ where: { ...ownerVehicleWhere, status: 'Active' } }),
-      isOwner ? Booking.count({ distinct: true, col: 'passenger_id', where: ownerBookingWhere }) : Passenger.count(),
-      Booking.count({ where: { ...ownerBookingWhere, booking_status: 'cancelled' } }),
+      isOwner ? Booking.count({ distinct: true, col: 'passenger_id', where: filteredBookingWhere }) : Passenger.count(),
+      Booking.count({ where: ownerBookingWhere }),
     ]);
+
+    const eligibleBoardingCount = confirmedBookings + completedBookings;
+    const boardingRate = eligibleBoardingCount > 0
+      ? Math.round((boardedBookings / eligibleBoardingCount) * 1000) / 10
+      : 0;
 
     // Bookings by status
     const bookingsByStatus = await Booking.findAll({
       attributes: ['booking_status', [fn('COUNT', col('id')), 'count']],
-      where: ownerBookingWhere,
+      where: filteredBookingWhere,
       group: ['booking_status'],
+      raw: true,
     });
 
     const vehicleStatusChart = await Vehicle.findAll({
@@ -150,17 +225,110 @@ exports.stats = async (req, res, next) => {
 
     const tripStatusChart = await Trip.findAll({
       attributes: ['status', [fn('COUNT', col('id')), 'count']],
-      where: ownerTripWhere,
+      where: filteredTripWhere,
       group: ['status'],
       raw: true,
     });
 
+    // Boarding status chart breakdown
+    const boardingStatusChart = [
+      { status: 'boarded', label: 'Boarded', count: boardedBookings, color: '#10b981' },
+      { status: 'not_boarded', label: 'Pending Boarding', count: notBoardedBookings, color: '#f59e0b' },
+      { status: 'no_show', label: 'No Show', count: noShowBookings, color: '#8b5cf6' },
+      { status: 'cancelled', label: 'Cancelled', count: cancelledBookings, color: '#ef4444' },
+    ];
+
+    // Timeline trend data (daily bookings, boarded, cancellations, revenue)
+    let trendStart = fromDate;
+    let trendEnd = toDate;
+    if (!trendStart || !trendEnd) {
+      const p = new Date();
+      p.setDate(p.getDate() - 13);
+      trendStart = p.toISOString().split('T')[0];
+      trendEnd = today;
+    }
+
+    const sDate = new Date(`${trendStart}T00:00:00`);
+    const eDate = new Date(`${trendEnd}T23:59:59.999`);
+    const dayMap = new Map();
+    const cur = new Date(sDate);
+    while (cur <= eDate) {
+      const dStr = cur.toISOString().split('T')[0];
+      const dayName = cur.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      dayMap.set(dStr, {
+        date: dStr,
+        label: dayName,
+        bookings: 0,
+        boarded: 0,
+        cancelled: 0,
+        revenue: 0,
+      });
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    const trendBookings = await Booking.findAll({
+      attributes: ['id', 'travel_date', 'booking_status', 'boarding_status', 'final_amount', 'created_at'],
+      where: {
+        ...ownerBookingWhere,
+        travel_date: { [Op.between]: [trendStart, trendEnd] },
+      },
+      raw: true,
+    });
+
+    for (const b of trendBookings) {
+      const dStr = b.travel_date;
+      if (dayMap.has(dStr)) {
+        const entry = dayMap.get(dStr);
+        entry.bookings += 1;
+        if (b.boarding_status === 'boarded') entry.boarded += 1;
+        if (b.booking_status === 'cancelled') entry.cancelled += 1;
+        if (b.booking_status === 'confirmed' || b.booking_status === 'completed') {
+          entry.revenue = addMoney(entry.revenue, Number(b.final_amount) || 0);
+        }
+      }
+    }
+    const timelineTrend = Array.from(dayMap.values());
+
+    // Hourly commuter distribution (06:00 to 22:00)
+    const hourlyTrips = await Trip.findAll({
+      attributes: ['id', 'departure_time'],
+      where: filteredTripWhere,
+      include: [{
+        model: Booking,
+        as: 'bookings',
+        attributes: ['id', 'boarding_status', 'booking_status'],
+        where: { booking_status: { [Op.ne]: 'cancelled' } },
+        required: false,
+      }],
+    });
+
+    const hourBuckets = new Map();
+    for (let h = 6; h <= 22; h += 1) {
+      const hStr = String(h).padStart(2, '0') + ':00';
+      const label = h === 12 ? '12 PM' : h > 12 ? `${h - 12} PM` : `${h} AM`;
+      hourBuckets.set(h, { hour: hStr, label, bookings: 0, boarded: 0 });
+    }
+
+    for (const t of hourlyTrips) {
+      if (!t.departure_time) continue;
+      const h = parseInt(String(t.departure_time).split(':')[0], 10);
+      if (hourBuckets.has(h)) {
+        const bucket = hourBuckets.get(h);
+        const bkgs = t.bookings || [];
+        bucket.bookings += bkgs.length;
+        bucket.boarded += bkgs.filter((b) => b.boarding_status === 'boarded').length;
+      }
+    }
+    const hourlyDistribution = Array.from(hourBuckets.values());
+
     // Recent bookings
     const recentBookingWhere = isOwner
-      ? { ...ownerBookingWhere, booking_status: { [Op.ne]: 'cancelled' } }
-      : ownerBookingWhere;
+      ? { ...filteredBookingWhere, booking_status: { [Op.ne]: 'cancelled' } }
+      : filteredBookingWhere;
     const recentBookings = await Booking.findAll({
-      attributes: ['id', 'passenger_name', 'booking_reference', 'booking_status'],
+      attributes: isAdmin
+        ? ['id', 'passenger_name', 'booking_reference', 'booking_status', 'final_amount', 'created_at']
+        : ['id', 'passenger_name', 'booking_reference', 'booking_status', 'created_at'],
       where: recentBookingWhere,
       limit: 10,
       order: [['created_at', 'DESC']],
@@ -168,16 +336,58 @@ exports.stats = async (req, res, next) => {
         { model: Trip, as: 'trip', attributes: ['id', 'schedule_code'] },
         { model: CustomerUser, as: 'passenger', attributes: ['id', 'name', 'mobile'] },
       ],
-      attributes: isAdmin
-        ? ['id', 'passenger_name', 'booking_reference', 'booking_status', 'final_amount']
-        : ['id', 'passenger_name', 'booking_reference', 'booking_status'],
+    });
+
+    // Boarded Users list for dashboard (showing passengers, trip, stops, seats, boarding status)
+    const boardedUserWhere = { ...filteredBookingWhere };
+    if (reqBoardingStatus && reqBoardingStatus !== 'all') {
+      boardedUserWhere.boarding_status = reqBoardingStatus;
+    }
+
+    const boardedUsers = await Booking.findAll({
+      attributes: [
+        'id', 'booking_reference', 'passenger_name', 'passenger_mobile', 'passenger_email',
+        'travel_date', 'seat_numbers', 'total_seats', 'total_fare', 'final_amount',
+        'payment_status', 'booking_status', 'boarding_status', 'boarded_at', 'boarding_pass_code',
+        'created_at',
+      ],
+      where: boardedUserWhere,
+      include: [
+        {
+          model: Trip,
+          as: 'trip',
+          attributes: ['id', 'schedule_code', 'trip_date', 'departure_time', 'status'],
+          include: [
+            { model: Route, as: 'route', attributes: ['id', 'route_name', 'origin_city', 'destination_city'] },
+            { model: Vehicle, as: 'vehicle', attributes: ['id', 'registration_number', 'company_model'] },
+            { model: Driver, as: 'driver', attributes: ['id', 'name', 'mobile'] },
+          ],
+        },
+        { model: Stop, as: 'origin_stop', attributes: ['id', 'stop_name'] },
+        { model: Stop, as: 'destination_stop', attributes: ['id', 'stop_name'] },
+      ],
+      order: [
+        [literal("CASE WHEN `Booking`.`boarding_status` = 'boarded' THEN 1 WHEN `Booking`.`boarding_status` = 'not_boarded' THEN 2 ELSE 3 END"), 'ASC'],
+        ['travel_date', 'DESC'],
+        ['created_at', 'DESC'],
+      ],
+      limit: 30,
     });
 
     let adminFinancialSummary = {};
     let revenueChart = [];
+    let paymentMethodsChart = [];
     if (isAdmin) {
-      const [totalRevenue, todayRevenue, pendingRefunds, pendingRefundAmount, completedRefundAmount] = await Promise.all([
+      const [
+        totalRevenue,
+        filteredRevenue,
+        todayRevenue,
+        pendingRefunds,
+        pendingRefundAmount,
+        completedRefundAmount,
+      ] = await Promise.all([
         Payment.sum('amount', { where: { status: 'captured' } }),
+        Payment.sum('amount', { where: filteredPaymentWhere }),
         Payment.sum('amount', { where: { status: 'captured', created_at: { [Op.gte]: new Date(today) } } }),
         Refund.count({ where: { status: 'pending' } }),
         Refund.sum('refund_amount', { where: { status: 'pending' } }),
@@ -185,7 +395,11 @@ exports.stats = async (req, res, next) => {
       ]);
 
       adminFinancialSummary = {
-        revenue: { total: totalRevenue || 0, today: todayRevenue || 0 },
+        revenue: {
+          total: filteredRevenue != null ? filteredRevenue : (totalRevenue || 0),
+          all_time: totalRevenue || 0,
+          today: todayRevenue || 0,
+        },
         refunds: { pending: pendingRefunds, pendingAmount: pendingRefundAmount || 0, completedAmount: completedRefundAmount || 0 },
       };
 
@@ -199,24 +413,72 @@ exports.stats = async (req, res, next) => {
         group: [literal('month')],
         order: [[literal('month'), 'ASC']],
       });
+
+      paymentMethodsChart = await Payment.findAll({
+        attributes: [
+          'payment_method',
+          [fn('COUNT', col('id')), 'count'],
+          [fn('SUM', col('amount')), 'total_amount'],
+        ],
+        where: filteredPaymentWhere,
+        group: ['payment_method'],
+        raw: true,
+      });
     }
 
-    // Top routes
+    // Top routes with boarding count & rate
     const topRoutes = await Booking.findAll({
-      attributes: ['trip_id', [fn('COUNT', col('Booking.id')), 'booking_count']],
-      include: [{ model: Trip, as: 'trip', attributes: ['id', 'schedule_code'], include: [{ model: Route, as: 'route', attributes: ['id', 'route_name', 'origin_city', 'destination_city'] }] }],
-      group: ['trip_id', 'trip.id', 'trip.schedule_code', 'trip.route.id', 'trip.route.route_name', 'trip.route.origin_city', 'trip.route.destination_city'],
+      attributes: [
+        'trip_id',
+        [fn('COUNT', col('Booking.id')), 'booking_count'],
+        [literal("SUM(CASE WHEN `Booking`.`boarding_status` = 'boarded' THEN 1 ELSE 0 END)"), 'boarded_count'],
+      ],
+      include: [{
+        model: Trip,
+        as: 'trip',
+        attributes: ['id', 'schedule_code'],
+        include: [{
+          model: Route,
+          as: 'route',
+          attributes: ['id', 'route_name', 'origin_city', 'destination_city'],
+        }],
+      }],
+      group: [
+        'trip_id', 'trip.id', 'trip.schedule_code',
+        'trip.route.id', 'trip.route.route_name', 'trip.route.origin_city', 'trip.route.destination_city',
+      ],
       order: [[literal('booking_count'), 'DESC']],
-      limit: 5,
-      where: { ...ownerBookingWhere, booking_status: 'confirmed' },
+      limit: 6,
+      where: { ...filteredBookingWhere, booking_status: 'confirmed' },
     });
 
     res.json({
       success: true,
       data: {
+        filter: {
+          from_date: fromDate,
+          to_date: toDate,
+          preset,
+          date_field,
+          boarding_status: reqBoardingStatus || 'all',
+        },
         summary: {
           trips: { total: totalTrips, today: todayTrips, active: activeTrips },
-          bookings: { total: totalBookings, today: todayBookings, confirmed: confirmedBookings, cancelled: cancelledBookings },
+          bookings: {
+            total: totalBookings,
+            all_time: allTimeBookings,
+            today: todayBookings,
+            confirmed: confirmedBookings,
+            cancelled: cancelledBookings,
+            completed: completedBookings,
+          },
+          boarding: {
+            boarded: boardedBookings,
+            not_boarded: notBoardedBookings,
+            no_show: noShowBookings,
+            total_eligible: eligibleBoardingCount,
+            boarding_rate: boardingRate,
+          },
           drivers: { total: totalDrivers, active: activeDrivers },
           vehicles: { total: totalVehicles, active: activeVehicles },
           passengers: { total: totalPassengers },
@@ -224,14 +486,121 @@ exports.stats = async (req, res, next) => {
           ...adminFinancialSummary,
         },
         charts: {
-          ...(isAdmin ? { revenue: revenueChart } : {}),
+          ...(isAdmin ? { revenue: revenueChart, paymentMethods: paymentMethodsChart } : {}),
           bookingsByStatus,
+          boardingStatus: boardingStatusChart,
+          timelineTrend,
+          hourlyDistribution,
           vehicleStatus: vehicleStatusChart,
           driverStatus: driverStatusChart,
           tripStatus: tripStatusChart,
         },
         recentBookings,
+        boardedUsers,
         topRoutes,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── Boarded Passengers (Detailed & Paginated) ──────────────
+exports.boardedPassengers = async (req, res, next) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      search,
+      boarding_status,
+      booking_status,
+      from_date,
+      to_date,
+      trip_id,
+      date_field = 'travel_date',
+    } = req.query;
+
+    const p = Math.max(1, parseInt(page) || 1);
+    const l = Math.min(100, Math.max(1, parseInt(limit) || 20));
+    const offset = (p - 1) * l;
+
+    const isOwner = hasRole(req.user, 'owner');
+    let ownerTripWhere = {};
+    if (isOwner) {
+      const [vehicles, drivers] = await Promise.all([
+        Vehicle.findAll({ attributes: ['id'], where: { owner_id: req.user.id }, raw: true }),
+        Driver.findAll({ attributes: ['id'], where: { owner_id: req.user.id }, raw: true }),
+      ]);
+      const vehicleIds = vehicles.map((v) => v.id);
+      const driverIds = drivers.map((d) => d.id);
+      ownerTripWhere = vehicleIds.length || driverIds.length
+        ? { [Op.or]: [
+          ...(vehicleIds.length ? [{ vehicle_id: { [Op.in]: vehicleIds } }] : []),
+          ...(driverIds.length ? [{ driver_id: { [Op.in]: driverIds } }] : []),
+        ] }
+        : { id: { [Op.in]: [] } };
+    }
+    const ownerTripIds = isOwner
+      ? (await Trip.findAll({ attributes: ['id'], where: ownerTripWhere, raw: true })).map((t) => t.id)
+      : null;
+
+    const where = {};
+    if (ownerTripIds) where.trip_id = { [Op.in]: ownerTripIds };
+    if (trip_id) where.trip_id = trip_id;
+    if (boarding_status && boarding_status !== 'all') where.boarding_status = boarding_status;
+    if (booking_status && booking_status !== 'all') where.booking_status = booking_status;
+
+    if (from_date && to_date) {
+      if (date_field === 'created_at') {
+        where.created_at = { [Op.between]: [new Date(`${from_date}T00:00:00`), new Date(`${to_date}T23:59:59.999`)] };
+      } else {
+        where.travel_date = { [Op.between]: [from_date, to_date] };
+      }
+    }
+
+    if (search) {
+      where[Op.or] = [
+        { booking_reference: { [Op.like]: `%${search}%` } },
+        { passenger_name: { [Op.like]: `%${search}%` } },
+        { passenger_mobile: { [Op.like]: `%${search}%` } },
+        { boarding_pass_code: { [Op.like]: `%${search}%` } },
+      ];
+    }
+
+    const { count, rows } = await Booking.findAndCountAll({
+      where,
+      include: [
+        {
+          model: Trip,
+          as: 'trip',
+          attributes: ['id', 'schedule_code', 'trip_date', 'departure_time', 'status'],
+          include: [
+            { model: Route, as: 'route', attributes: ['id', 'route_name', 'origin_city', 'destination_city'] },
+            { model: Vehicle, as: 'vehicle', attributes: ['id', 'registration_number', 'company_model'] },
+            { model: Driver, as: 'driver', attributes: ['id', 'name', 'mobile'] },
+          ],
+        },
+        { model: Stop, as: 'origin_stop', attributes: ['id', 'stop_name'] },
+        { model: Stop, as: 'destination_stop', attributes: ['id', 'stop_name'] },
+        { model: CustomerUser, as: 'passenger', attributes: ['id', 'name', 'mobile', 'email'] },
+      ],
+      offset,
+      limit: l,
+      order: [
+        [literal("CASE WHEN `Booking`.`boarding_status` = 'boarded' THEN 1 WHEN `Booking`.`boarding_status` = 'not_boarded' THEN 2 ELSE 3 END"), 'ASC'],
+        ['travel_date', 'DESC'],
+        ['created_at', 'DESC'],
+      ],
+    });
+
+    res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        total: count,
+        page: p,
+        limit: l,
+        pages: Math.ceil(count / l),
       },
     });
   } catch (err) {
