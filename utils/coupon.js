@@ -45,13 +45,38 @@ const calculateCouponDiscount = async ({
 
   const usageWhere = { coupon_id: coupon.id };
   if (passengerId) {
+    try {
+      const { cleanCompletedTripCouponUsagesForPassenger } = require('../services/couponReleaseService');
+      await cleanCompletedTripCouponUsagesForPassenger(passengerId, { transaction });
+    } catch (cleanErr) {
+      // ignore
+    }
+
     const userLimit = Number(coupon.per_user_limit);
     if (Number.isFinite(userLimit) && userLimit > 0) {
       const userCount = await CouponUsage.count({
         where: { ...usageWhere, passenger_id: passengerId },
         transaction,
       });
-      if (userCount >= userLimit) return { error: 'You have reached this coupon user limit' };
+      if (userCount >= userLimit) {
+        return { error: 'You have already used this coupon. It cannot be reused until the usage is cleared.' };
+      }
+
+      // Prevent reuse if currently locked in an ongoing booking that is not completed
+      const { Booking, Trip } = require('../models');
+      const { Op } = require('sequelize');
+      const activeBooking = await Booking.findOne({
+        where: {
+          coupon_id: coupon.id,
+          passenger_id: passengerId,
+          booking_status: { [Op.ne]: 'cancelled' },
+        },
+        include: [{ model: Trip, as: 'trip', required: true }],
+        transaction,
+      });
+      if (activeBooking && activeBooking.trip?.status !== 'Completed') {
+        return { error: 'This coupon is currently in use for an active trip booking and cannot be reused until the trip is completed.' };
+      }
     }
   } else if (Number(coupon.per_user_limit) > 0) {
     return { error: 'A passenger_id is required to use this coupon' };

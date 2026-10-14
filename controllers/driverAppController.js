@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const { Op } = require('sequelize');
 const { Driver, DriverDetail, Trip, Route, Stop, Vehicle, Booking, Passenger, BusType, TripLocation, TripStopArrival } = require('../models');
 const { saveOtp, verifyOtp: verifySmsOtp, sendFast2SMSOtp } = require('../services/smsService');
+const { releaseUnusedCouponOnTripCompletion } = require('../services/couponReleaseService');
 
 // Helper to generate JWT Token for Driver
 const generateDriverToken = (driver) => {
@@ -525,6 +526,13 @@ exports.completeTrip = async (req, res, next) => {
       status: 'Completed',
       completed_at: new Date(),
     });
+
+    // Automatically remove coupon usage for passengers who cancelled or did not board
+    try {
+      await releaseUnusedCouponOnTripCompletion(trip.id);
+    } catch (couponErr) {
+      console.warn('[Driver completeTrip] Error releasing unused coupons:', couponErr.message);
+    }
 
     // Check if final ending GPS coordinates were provided or exist in DriverDetail
     const detail = await DriverDetail.findOne({ where: { driver_id: req.driver.id } });

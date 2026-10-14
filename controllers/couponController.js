@@ -1,8 +1,9 @@
 'use strict';
 
 const { Op } = require('sequelize');
-const { Coupon, CouponUsage, CustomerUser, Booking } = require('../models');
+const { Coupon, CouponUsage, CustomerUser, Booking, Trip } = require('../models');
 const { calculateCouponDiscount } = require('../utils/coupon');
+const { cleanCompletedTripCouponUsagesForPassenger } = require('../services/couponReleaseService');
 
 const buildPagination = (page, limit) => {
   const p = Math.max(1, parseInt(page) || 1);
@@ -27,6 +28,7 @@ exports.list = async (req, res, next) => {
 exports.listAvailable = async (req, res, next) => {
   try {
     const { passenger_id, device_id } = req.query;
+    const mobile = req.query.passenger_mobile || req.query.mobile;
     const amount = req.query.amount === undefined ? null : Number(req.query.amount);
     const seatCount = req.query.seat_count === undefined ? 1 : Number(req.query.seat_count);
     if (amount !== null && (!Number.isFinite(amount) || amount < 0)) {
@@ -34,6 +36,22 @@ exports.listAvailable = async (req, res, next) => {
     }
     if (!Number.isInteger(seatCount) || seatCount < 1) {
       return res.status(400).json({ success: false, message: 'seat_count must be a positive integer' });
+    }
+
+    // Resolve passenger ID from either passenger_id or mobile number
+    let resolvedPassengerId = passenger_id ? Number(passenger_id) : null;
+    if (!resolvedPassengerId && mobile) {
+      const customer = await CustomerUser.findOne({ where: { mobile: String(mobile).trim() } });
+      if (customer) resolvedPassengerId = customer.id;
+    }
+
+    // Automatically clear coupon usages for past trips that are completed where passenger cancelled or didn't board
+    if (resolvedPassengerId) {
+      try {
+        await cleanCompletedTripCouponUsagesForPassenger(resolvedPassengerId);
+      } catch (cleanErr) {
+        console.warn('[listAvailable] Error clearing completed trip coupon usages:', cleanErr.message);
+      }
     }
 
     const today = new Date().toISOString().slice(0, 10);
@@ -54,10 +72,29 @@ exports.listAvailable = async (req, res, next) => {
       if (amount !== null && amount < Number(coupon.min_amount || 0)) return null;
       if (Number(seatCount) > Number(coupon.max_seats || Number.MAX_SAFE_INTEGER)) return null;
 
-      if (passenger_id && Number(coupon.per_user_limit) > 0) {
-        const usedByPassenger = await CouponUsage.count({ where: { coupon_id: coupon.id, passenger_id } });
-        if (usedByPassenger >= Number(coupon.per_user_limit)) return null;
+      if (resolvedPassengerId) {
+        const userLimit = Number(coupon.per_user_limit || 1);
+        const usedByPassenger = await CouponUsage.count({
+          where: { coupon_id: coupon.id, passenger_id: resolvedPassengerId },
+        });
+
+        // Hide coupon if passenger has already used it and limit reached
+        if (usedByPassenger >= userLimit) return null;
+
+        // Also check if passenger has an active booking using this coupon that is not completed
+        const activeBooking = await Booking.findOne({
+          where: {
+            coupon_id: coupon.id,
+            passenger_id: resolvedPassengerId,
+            booking_status: { [Op.ne]: 'cancelled' },
+          },
+          include: [{ model: Trip, as: 'trip', required: true }],
+        });
+        if (activeBooking && activeBooking.trip?.status !== 'Completed') {
+          return null; // Hide coupon until usage is cleared
+        }
       }
+
       if (device_id && coupon.per_device_limit !== null && coupon.per_device_limit !== undefined) {
         const usedByDevice = await CouponUsage.count({ where: { coupon_id: coupon.id, device_id: String(device_id).trim() } });
         if (usedByDevice >= Number(coupon.per_device_limit)) return null;

@@ -5,6 +5,7 @@ const sequelize = require('../config/database');
 const { Trip, Route, Stop, Driver, Vehicle, BusType, Booking, OwnerApprovalRequest } = require('../models');
 const { logAction } = require('../middleware/auditLog');
 const { hasRole } = require('../utils/roles');
+const { releaseUnusedCouponOnTripCompletion } = require('../services/couponReleaseService');
 
 const isOwnerRole = (req) => hasRole(req.user, 'owner');
 const ownerCanReadBookings = (req) => (req.userPermissions || []).some((permission) => ['bookings.read', 'bookings.manage'].includes(permission));
@@ -838,6 +839,15 @@ exports.updateStatus = async (req, res, next) => {
     if (status === 'Active') updates.started_at = new Date();
     if (status === 'Completed') updates.completed_at = new Date();
     await trip.update(updates);
+
+    if (status === 'Completed') {
+      try {
+        await releaseUnusedCouponOnTripCompletion(trip.id);
+      } catch (couponErr) {
+        console.warn('[Trip updateStatus] Error releasing unused coupons:', couponErr.message);
+      }
+    }
+
     res.json({ success: true, message: `Trip status updated to ${status}`, data: trip });
   } catch (err) {
     next(err);
