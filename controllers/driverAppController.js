@@ -2,7 +2,7 @@
 
 const jwt = require('jsonwebtoken');
 const { Op } = require('sequelize');
-const { Driver, DriverDetail, Trip, Route, Stop, Vehicle, Booking, Passenger, BusType, TripLocation } = require('../models');
+const { Driver, DriverDetail, Trip, Route, Stop, Vehicle, Booking, Passenger, BusType, TripLocation, TripStopArrival } = require('../models');
 const { saveOtp, verifyOtp: verifySmsOtp, sendFast2SMSOtp } = require('../services/smsService');
 
 // Helper to generate JWT Token for Driver
@@ -1238,15 +1238,151 @@ exports.getCurrentStop = async (req, res, next) => {
 };
 
 /**
- * Arrive at Stop
+ * Get Trip Route & Stops for Map Display (with reached stoppage status)
+ * GET /api/bus-driver/trips/:id/route-map
+ */
+exports.getTripRouteMap = async (req, res, next) => {
+  try {
+    const tripId = req.params.id;
+    const trip = await Trip.findOne({
+      where: { id: tripId, driver_id: req.driver.id },
+      include: [
+        {
+          model: Route,
+          as: 'route',
+          include: [{ model: Stop, as: 'stops' }],
+        },
+        { model: Vehicle, as: 'vehicle', attributes: ['id', 'registration_number', 'company_model'] },
+        { model: Driver, as: 'driver', attributes: ['id', 'name', 'mobile'] },
+        { model: TripStopArrival, as: 'stop_arrivals' },
+      ],
+    });
+
+    if (!trip) {
+      return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found for this driver' });
+    }
+
+    const bookings = await Booking.findAll({
+      where: {
+        trip_id: tripId,
+        [Op.or]: [
+          { booking_status: 'confirmed', payment_status: 'paid' },
+          { booking_status: 'cancelled' },
+        ],
+      },
+      attributes: ['id', 'origin_stop_id', 'destination_stop_id', 'boarding_status'],
+    });
+
+    const arrivalsMap = new Map();
+    (trip.stop_arrivals || []).forEach((arr) => {
+      arrivalsMap.set(Number(arr.stop_id), arr);
+    });
+
+    const rawStops = (trip.route?.stops || []).map((s) => s.toJSON());
+    rawStops.sort((a, b) => (a.stop_sequence || 0) - (b.stop_sequence || 0));
+
+    let reachedCount = 0;
+    const stops = rawStops.map((stop) => {
+      const arr = arrivalsMap.get(Number(stop.id)) || null;
+      const isReached = Boolean(arr && (arr.status === 'ARRIVED' || arr.status === 'COMPLETED'));
+      if (isReached) reachedCount++;
+
+      const stopBookings = bookings.filter((b) => Number(b.origin_stop_id) === Number(stop.id));
+      const boarded = stopBookings.filter((b) => b.boarding_status === 'boarded').length;
+      const noShow = stopBookings.filter((b) => b.boarding_status === 'no_show').length;
+      const pending = stopBookings.length - boarded - noShow;
+
+      return {
+        id: stop.id,
+        stop_id: stop.id,
+        stop_name: stop.stop_name,
+        stop_code: stop.stop_code,
+        stop_sequence: stop.stop_sequence,
+        latitude: stop.latitude != null ? Number(stop.latitude) : null,
+        longitude: stop.longitude != null ? Number(stop.longitude) : null,
+        scheduled_time: stop.pickup_time || trip.departure_time,
+        is_reached: isReached,
+        status: arr?.status || 'PENDING',
+        arrived_at: arr?.arrived_at || null,
+        completed_at: arr?.completed_at || null,
+        arrival_latitude: arr?.arrival_latitude != null ? Number(arr.arrival_latitude) : null,
+        arrival_longitude: arr?.arrival_longitude != null ? Number(arr.arrival_longitude) : null,
+        passengers: {
+          total: stopBookings.length,
+          boarded,
+          pending,
+          no_show: noShow,
+        },
+      };
+    });
+
+    const currentStop = stops.find((s) => s.status === 'ARRIVED') || stops.find((s) => s.status === 'PENDING') || stops[stops.length - 1] || null;
+
+    const detail = await DriverDetail.findOne({
+      where: { driver_id: req.driver.id },
+      attributes: ['latitude', 'longitude', 'location_speed_kmh', 'location_heading', 'updated_at'],
+    });
+
+    res.json({
+      status: 200,
+      success: true,
+      data: {
+        trip: {
+          id: trip.id,
+          schedule_code: trip.schedule_code,
+          status: trip.status,
+          trip_date: trip.trip_date,
+          departure_time: trip.departure_time,
+          started_at: trip.started_at,
+          completed_at: trip.completed_at,
+        },
+        route: {
+          id: trip.route?.id,
+          route_name: trip.route?.route_name,
+          route_code: trip.route?.route_code,
+          origin_city: trip.route?.origin_city,
+          destination_city: trip.route?.destination_city,
+          total_distance: trip.route?.total_distance,
+          estimated_duration: trip.route?.estimated_duration,
+        },
+        driver: trip.driver,
+        vehicle: trip.vehicle,
+        driver_location: detail ? {
+          latitude: detail.latitude != null ? Number(detail.latitude) : null,
+          longitude: detail.longitude != null ? Number(detail.longitude) : null,
+          speed_kmh: detail.location_speed_kmh != null ? Number(detail.location_speed_kmh) : null,
+          heading: detail.location_heading != null ? Number(detail.location_heading) : null,
+          updated_at: detail.updated_at,
+        } : null,
+        progress: {
+          total_stops: stops.length,
+          reached_stops: reachedCount,
+          pending_stops: stops.length - reachedCount,
+          percent_complete: stops.length > 0 ? Math.round((reachedCount / stops.length) * 100) : 0,
+        },
+        current_stop: currentStop,
+        stops,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Arrive at Stop (Persist Stoppage Reach in Database)
  * POST /api/bus-driver/trips/:id/stops/:stopId/arrive
+ * POST /api/bus-driver/trips/:id/stops/:stopId/reach
  */
 exports.arriveAtStop = async (req, res, next) => {
   try {
     const { id: tripId, stopId } = req.params;
-    const { latitude, longitude } = req.body || {};
+    const { latitude, longitude, speed, heading, accuracy, notes } = req.body || {};
 
-    const trip = await Trip.findOne({ where: { id: tripId, driver_id: req.driver.id } });
+    const trip = await Trip.findOne({
+      where: { id: tripId, driver_id: req.driver.id },
+      include: [{ model: Route, as: 'route', include: [{ model: Stop, as: 'stops' }] }],
+    });
     if (!trip) {
       return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found' });
     }
@@ -1257,19 +1393,122 @@ exports.arriveAtStop = async (req, res, next) => {
     }
 
     const now = new Date();
+    const parsedLat = latitude != null && latitude !== '' ? Number(latitude) : null;
+    const parsedLng = longitude != null && longitude !== '' ? Number(longitude) : null;
+    const validCoords = parsedLat != null && parsedLng != null && Number.isFinite(parsedLat) && Number.isFinite(parsedLng)
+      && Math.abs(parsedLat) <= 90 && Math.abs(parsedLng) <= 180;
+
+    const bookings = await Booking.findAll({
+      where: {
+        trip_id: tripId,
+        origin_stop_id: stopId,
+        [Op.or]: [
+          { booking_status: 'confirmed', payment_status: 'paid' },
+          { booking_status: 'cancelled' },
+        ],
+      },
+    });
+
+    const total = bookings.length;
+    const boarded = bookings.filter((b) => b.boarding_status === 'boarded').length;
+    const noShow = bookings.filter((b) => b.boarding_status === 'no_show').length;
+    const pending = total - boarded - noShow;
+
+    // Find or create in TripStopArrival table
+    let arrivalRecord = await TripStopArrival.findOne({
+      where: { trip_id: trip.id, stop_id: stop.id },
+    });
+
+    if (arrivalRecord) {
+      await arrivalRecord.update({
+        arrived_at: now,
+        status: 'ARRIVED',
+        arrival_latitude: validCoords ? parsedLat : arrivalRecord.arrival_latitude,
+        arrival_longitude: validCoords ? parsedLng : arrivalRecord.arrival_longitude,
+        passengers_boarded: boarded,
+        passengers_pending: pending,
+        passengers_no_show: noShow,
+        notes: notes !== undefined ? notes : arrivalRecord.notes,
+      });
+    } else {
+      arrivalRecord = await TripStopArrival.create({
+        trip_id: trip.id,
+        stop_id: stop.id,
+        driver_id: req.driver.id,
+        vehicle_id: trip.vehicle_id || null,
+        stop_sequence: stop.stop_sequence || 1,
+        stop_name: stop.stop_name,
+        scheduled_arrival_time: stop.pickup_time || trip.departure_time || null,
+        arrived_at: now,
+        status: 'ARRIVED',
+        arrival_latitude: validCoords ? parsedLat : null,
+        arrival_longitude: validCoords ? parsedLng : null,
+        passengers_boarded: boarded,
+        passengers_pending: pending,
+        passengers_no_show: noShow,
+        notes: notes || null,
+      });
+    }
+
+    // Also record arrival breadcrumb in trip_locations table
+    if (validCoords) {
+      try {
+        await TripLocation.create({
+          trip_id: trip.id,
+          driver_id: req.driver.id,
+          vehicle_id: trip.vehicle_id || null,
+          latitude: parsedLat,
+          longitude: parsedLng,
+          speed_kmh: speed != null && Number.isFinite(Number(speed)) ? Number(speed) : 0,
+          heading: heading != null && Number.isFinite(Number(heading)) ? Number(heading) : null,
+          accuracy: accuracy != null && Number.isFinite(Number(accuracy)) ? Number(accuracy) : null,
+          recorded_at: now,
+        });
+
+        // Update DriverDetail live location
+        const detail = await DriverDetail.findOne({ where: { driver_id: req.driver.id } });
+        if (detail) {
+          await detail.update({
+            latitude: parsedLat,
+            longitude: parsedLng,
+            location_trip_id: trip.id,
+          });
+        }
+      } catch (locErr) {
+        console.warn('TripLocation arrival ping recording error:', locErr.message);
+      }
+    }
+
+    // Determine next stop
+    const stops = (trip.route?.stops || []).slice().sort((a, b) => (a.stop_sequence || 0) - (b.stop_sequence || 0));
+    const currentIndex = stops.findIndex((s) => Number(s.id) === Number(stopId));
+    const nextStop = currentIndex >= 0 && currentIndex + 1 < stops.length ? stops[currentIndex + 1] : null;
 
     res.json({
       status: 200,
       success: true,
-      message: `Arrived at stop ${stop.stop_name}`,
+      message: `Arrived at stop ${stop.stop_name}. Stoppage reach recorded in database.`,
       data: {
         trip_id: trip.id,
         stop_id: stop.id,
         stop_name: stop.stop_name,
+        stop_sequence: stop.stop_sequence,
         arrived_at: now,
-        arrival_latitude: latitude || null,
-        arrival_longitude: longitude || null,
-        status: 'ARRIVED',
+        arrival_latitude: arrivalRecord.arrival_latitude,
+        arrival_longitude: arrivalRecord.arrival_longitude,
+        status: arrivalRecord.status,
+        passengers: {
+          total,
+          boarded,
+          pending,
+          no_show: noShow,
+        },
+        stoppage_arrival_id: arrivalRecord.id,
+        next_stop: nextStop ? {
+          stop_id: nextStop.id,
+          name: nextStop.stop_name,
+          sequence: nextStop.stop_sequence,
+        } : null,
       },
     });
   } catch (err) {
@@ -1343,13 +1582,13 @@ exports.getStopPassengers = async (req, res, next) => {
 };
 
 /**
- * Complete Stop Operations
+ * Complete Stop Operations (Persist Stoppage Departure in Database)
  * POST /api/bus-driver/trips/:id/stops/:stopId/complete
  */
 exports.completeStop = async (req, res, next) => {
   try {
     const { id: tripId, stopId } = req.params;
-    const { latitude, longitude } = req.body || {};
+    const { latitude, longitude, notes } = req.body || {};
 
     const trip = await Trip.findOne({
       where: { id: tripId, driver_id: req.driver.id },
@@ -1363,21 +1602,60 @@ exports.completeStop = async (req, res, next) => {
     const total = bookings.length;
     const boarded = bookings.filter((b) => b.boarding_status === 'boarded').length;
     const noShow = bookings.filter((b) => b.boarding_status === 'no_show').length;
+    const pending = total - boarded - noShow;
+    const now = new Date();
 
-    const stops = trip.route?.stops || [];
+    // Update TripStopArrival record
+    let arrivalRecord = await TripStopArrival.findOne({
+      where: { trip_id: trip.id, stop_id: stopId },
+    });
+
+    if (arrivalRecord) {
+      await arrivalRecord.update({
+        completed_at: now,
+        status: 'COMPLETED',
+        passengers_boarded: boarded,
+        passengers_pending: pending,
+        passengers_no_show: noShow,
+        notes: notes !== undefined ? notes : arrivalRecord.notes,
+      });
+    } else {
+      const stop = await Stop.findByPk(stopId);
+      arrivalRecord = await TripStopArrival.create({
+        trip_id: trip.id,
+        stop_id: Number(stopId),
+        driver_id: req.driver.id,
+        vehicle_id: trip.vehicle_id || null,
+        stop_sequence: stop?.stop_sequence || 1,
+        stop_name: stop?.stop_name || 'Stop',
+        scheduled_arrival_time: stop?.pickup_time || trip.departure_time || null,
+        arrived_at: now,
+        completed_at: now,
+        status: 'COMPLETED',
+        passengers_boarded: boarded,
+        passengers_pending: pending,
+        passengers_no_show: noShow,
+        notes: notes || null,
+      });
+    }
+
+    const stops = (trip.route?.stops || []).slice().sort((a, b) => (a.stop_sequence || 0) - (b.stop_sequence || 0));
     const currentIndex = stops.findIndex((s) => Number(s.id) === Number(stopId));
     const nextStop = currentIndex >= 0 && currentIndex + 1 < stops.length ? stops[currentIndex + 1] : null;
 
     res.json({
       status: 200,
       success: true,
-      message: 'Stop completed successfully',
+      message: 'Stop completed successfully. Stoppage departure recorded in database.',
       data: {
         stop_id: Number(stopId),
         total_passengers: total,
         boarded,
         no_show: noShow,
-        completed_at: new Date(),
+        pending,
+        arrived_at: arrivalRecord.arrived_at,
+        completed_at: now,
+        status: 'COMPLETED',
         next_stop: nextStop ? {
           stop_id: nextStop.id,
           name: nextStop.stop_name,

@@ -37,8 +37,10 @@ router.get('/trips/:id', driverAppController.getTripDetails);
 router.get('/trips/:id/manifest', driverAppController.getPassengerManifest);
 
 // Stop-by-Stop Navigation & Boarding Operations (Cityflo-style)
+router.get('/trips/:id/route-map', driverAppController.getTripRouteMap);
 router.get('/trips/:id/current-stop', driverAppController.getCurrentStop);
 router.post('/trips/:id/stops/:stopId/arrive', driverAppController.arriveAtStop);
+router.post('/trips/:id/stops/:stopId/reach', driverAppController.arriveAtStop);
 router.get('/trips/:id/stops/:stopId/passengers', driverAppController.getStopPassengers);
 router.post('/trips/:id/stops/:stopId/complete', driverAppController.completeStop);
 router.post('/trips/:id/stops/:stopId/mark-no-show', driverAppController.markNoShow);

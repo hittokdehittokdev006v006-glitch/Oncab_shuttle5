@@ -98,7 +98,7 @@ app.use(notFound);
 app.use(errorHandler);
 
 // ── Start Server ─────────────────────────────────────────────
-const { ensureTripsIndex, ensureTripLocationsTable } = require('../utils/dbIndexMigrator');
+const { ensureTripsIndex, ensureTripLocationsTable, ensureTripStopArrivalsTable } = require('../utils/dbIndexMigrator');
 const { startTripLocationPurgeJob } = require('../services/tripLocationPurgeService');
 
 const PORT = parseInt(process.env.PORT || '4000');
@@ -109,6 +109,7 @@ const startServer = async () => {
     console.log('✅ Database connected successfully');
     await ensureTripsIndex();
     await ensureTripLocationsTable();
+    await ensureTripStopArrivalsTable();
     // Start automatic retention purge for trip driver locations (>= 48h data kept)
     startTripLocationPurgeJob();
     // Sync models (use migrations in production)

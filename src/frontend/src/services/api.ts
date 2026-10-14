@@ -79,6 +79,8 @@ export const locationsAPI = {
   dashboard: () => api.get('/locations/dashboard'),
   getHistoryList: (params?: object) => api.get('/locations/history', { params }),
   getTripHistory: (tripId: number, params?: object) => api.get(`/locations/trips/${tripId}`, { params }),
+  getTripStoppages: (tripId: number) => api.get(`/locations/trips/${tripId}/stoppages`),
+  getStoppageLogs: (params?: object) => api.get('/locations/stoppages/logs', { params }),
 };
 
 export const rateChartsAPI = {

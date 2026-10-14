@@ -76,4 +76,39 @@ const ensureTripLocationsTable = async () => {
   }
 };
 
-module.exports = { ensureTripsIndex, ensureTripLocationsTable };
+const ensureTripStopArrivalsTable = async () => {
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS \`trip_stop_arrivals\` (
+        \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        \`trip_id\` INT UNSIGNED NOT NULL,
+        \`stop_id\` INT UNSIGNED NOT NULL,
+        \`driver_id\` INT UNSIGNED NOT NULL,
+        \`vehicle_id\` INT UNSIGNED DEFAULT NULL,
+        \`stop_sequence\` INT NOT NULL DEFAULT 1,
+        \`stop_name\` VARCHAR(255) DEFAULT NULL,
+        \`scheduled_arrival_time\` TIME DEFAULT NULL,
+        \`arrived_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        \`completed_at\` DATETIME DEFAULT NULL,
+        \`status\` ENUM('ARRIVED', 'COMPLETED', 'SKIPPED') NOT NULL DEFAULT 'ARRIVED',
+        \`arrival_latitude\` DECIMAL(10, 7) DEFAULT NULL,
+        \`arrival_longitude\` DECIMAL(10, 7) DEFAULT NULL,
+        \`passengers_boarded\` INT NOT NULL DEFAULT 0,
+        \`passengers_pending\` INT NOT NULL DEFAULT 0,
+        \`passengers_no_show\` INT NOT NULL DEFAULT 0,
+        \`notes\` TEXT DEFAULT NULL,
+        \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`unique_trip_stop\` (\`trip_id\`, \`stop_id\`),
+        KEY \`idx_trip_stop_arrived_at\` (\`arrived_at\`),
+        KEY \`idx_trip_stop_driver\` (\`driver_id\`),
+        KEY \`idx_trip_stop_vehicle\` (\`vehicle_id\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+  } catch (err) {
+    console.error('ensureTripStopArrivalsTable error:', err.message);
+  }
+};
+
+module.exports = { ensureTripsIndex, ensureTripLocationsTable, ensureTripStopArrivalsTable };

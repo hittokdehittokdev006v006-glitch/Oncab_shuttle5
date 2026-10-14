@@ -2,7 +2,7 @@
 
 const { hasRole } = require('../utils/roles');
 const { Op } = require('sequelize');
-const { Vehicle, DriverDetail, Trip, Route, Stop, Driver, TripLocation } = require('../models');
+const { Vehicle, DriverDetail, Trip, Route, Stop, Driver, TripLocation, TripStopArrival } = require('../models');
 
 const distanceInMeters = (latitude1, longitude1, latitude2, longitude2) => {
   const radians = (degrees) => degrees * Math.PI / 180;
@@ -64,6 +64,7 @@ exports.dashboard = async (req, res, next) => {
           include: [{ model: DriverDetail, as: 'details', attributes: ['latitude', 'longitude', 'location_speed_kmh', 'location_heading', 'location_trip_id', 'updated_at'] }],
         },
         { model: Vehicle, as: 'vehicle', attributes: ['id', 'registration_number'], required: false },
+        { model: TripStopArrival, as: 'stop_arrivals', required: false },
       ],
       order: [['trip_date', 'ASC'], ['departure_time', 'ASC']],
     });
@@ -111,6 +112,10 @@ exports.dashboard = async (req, res, next) => {
           ? gpsFresh ? 'Live' : positionIsValid ? 'Stale' : 'No GPS'
           : upcomingTrip ? 'Upcoming' : gpsFresh ? 'Available' : 'Offline';
 
+      const stopArrivals = (currentTrip?.stop_arrivals || []).slice().sort((a, b) => new Date(b.arrived_at) - new Date(a.arrived_at));
+      const lastReached = stopArrivals[0] || null;
+      const reachedStopsCount = (currentTrip?.stop_arrivals || []).filter((a) => a.status === 'ARRIVED' || a.status === 'COMPLETED').length;
+
       return {
         id: vehicle.id,
         registration_number: vehicle.registration_number,
@@ -136,6 +141,29 @@ exports.dashboard = async (req, res, next) => {
         upcoming_trip: upcomingTrip,
         nearest_stop: nearestStop,
         stops_passed_estimate: nearestStop ? nearestStop.route_index : 0,
+        stoppage_progress: {
+          total_stops: routeStops.length,
+          reached_stops: reachedStopsCount,
+          last_reached_stop: lastReached ? {
+            stop_id: lastReached.stop_id,
+            stop_name: lastReached.stop_name,
+            stop_sequence: lastReached.stop_sequence,
+            arrived_at: lastReached.arrived_at,
+            completed_at: lastReached.completed_at,
+            status: lastReached.status,
+          } : null,
+        },
+        confirmed_stop_arrivals: (currentTrip?.stop_arrivals || []).map((a) => ({
+          stop_id: a.stop_id,
+          stop_name: a.stop_name,
+          stop_sequence: a.stop_sequence,
+          arrived_at: a.arrived_at,
+          completed_at: a.completed_at,
+          status: a.status,
+          arrival_latitude: a.arrival_latitude,
+          arrival_longitude: a.arrival_longitude,
+          passengers_boarded: a.passengers_boarded,
+        })),
       };
     });
 
@@ -400,6 +428,7 @@ exports.getTripLocationHistory = async (req, res, next) => {
           attributes: ['id', 'route_name', 'route_code', 'origin_city', 'destination_city'],
           include: [{ model: Stop, as: 'stops', attributes: ['id', 'stop_name', 'latitude', 'longitude', 'stop_sequence'] }],
         },
+        { model: TripStopArrival, as: 'stop_arrivals', required: false },
       ],
     });
 
@@ -439,6 +468,171 @@ exports.getTripLocationHistory = async (req, res, next) => {
         route: routeData,
         total_points: locations.length,
         locations,
+        stoppage_arrivals: trip.stop_arrivals || [],
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Get Trip Stoppage Arrival Timeline
+ * GET /api2/locations/trips/:id/stoppages
+ */
+exports.getTripStoppageHistory = async (req, res, next) => {
+  try {
+    const tripId = req.params.id;
+    const isOwner = hasRole(req.user, 'owner');
+
+    const trip = await Trip.findOne({
+      where: { id: tripId },
+      include: [
+        { model: Driver, as: 'driver', attributes: ['id', 'name', 'mobile', 'owner_id'] },
+        { model: Vehicle, as: 'vehicle', attributes: ['id', 'registration_number', 'company_model', 'owner_id'] },
+        {
+          model: Route,
+          as: 'route',
+          attributes: ['id', 'route_name', 'route_code', 'origin_city', 'destination_city'],
+          include: [{ model: Stop, as: 'stops' }],
+        },
+        { model: TripStopArrival, as: 'stop_arrivals', required: false },
+      ],
+    });
+
+    if (!trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    if (isOwner && trip.vehicle?.owner_id !== req.user.id && trip.driver?.owner_id !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access to trip' });
+    }
+
+    const rawStops = (trip.route?.stops || []).map((s) => s.toJSON());
+    rawStops.sort((a, b) => (a.stop_sequence || 0) - (b.stop_sequence || 0));
+
+    const arrivalsMap = new Map();
+    (trip.stop_arrivals || []).forEach((arr) => {
+      arrivalsMap.set(Number(arr.stop_id), arr);
+    });
+
+    const timeline = rawStops.map((stop) => {
+      const arr = arrivalsMap.get(Number(stop.id)) || null;
+      return {
+        stop_id: stop.id,
+        stop_name: stop.stop_name,
+        stop_sequence: stop.stop_sequence,
+        latitude: stop.latitude != null ? Number(stop.latitude) : null,
+        longitude: stop.longitude != null ? Number(stop.longitude) : null,
+        scheduled_arrival_time: stop.pickup_time || trip.departure_time,
+        is_reached: Boolean(arr && (arr.status === 'ARRIVED' || arr.status === 'COMPLETED')),
+        status: arr?.status || 'PENDING',
+        arrived_at: arr?.arrived_at || null,
+        completed_at: arr?.completed_at || null,
+        arrival_latitude: arr?.arrival_latitude != null ? Number(arr.arrival_latitude) : null,
+        arrival_longitude: arr?.arrival_longitude != null ? Number(arr.arrival_longitude) : null,
+        passengers_boarded: arr?.passengers_boarded || 0,
+        passengers_pending: arr?.passengers_pending || 0,
+        passengers_no_show: arr?.passengers_no_show || 0,
+        notes: arr?.notes || null,
+      };
+    });
+
+    const reachedCount = timeline.filter((s) => s.is_reached).length;
+
+    res.json({
+      success: true,
+      data: {
+        trip_id: trip.id,
+        schedule_code: trip.schedule_code,
+        status: trip.status,
+        trip_date: trip.trip_date,
+        departure_time: trip.departure_time,
+        started_at: trip.started_at,
+        completed_at: trip.completed_at,
+        driver: trip.driver,
+        vehicle: trip.vehicle,
+        route: {
+          id: trip.route?.id,
+          route_name: trip.route?.route_name,
+          route_code: trip.route?.route_code,
+          origin_city: trip.route?.origin_city,
+          destination_city: trip.route?.destination_city,
+        },
+        progress: {
+          total_stops: timeline.length,
+          reached_stops: reachedCount,
+          pending_stops: timeline.length - reachedCount,
+          percent_complete: timeline.length > 0 ? Math.round((reachedCount / timeline.length) * 100) : 0,
+        },
+        timeline,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Get All Stoppage Arrival Logs (Admin Filterable)
+ * GET /api2/locations/stoppages/logs
+ */
+exports.getStoppageLogs = async (req, res, next) => {
+  try {
+    const { trip_id, driver_id, date, search, page = 1, limit = 50 } = req.query;
+    const isOwner = hasRole(req.user, 'owner');
+    const p = Math.max(1, parseInt(page, 10) || 1);
+    const l = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
+
+    const where = {};
+    if (trip_id) where.trip_id = trip_id;
+    if (driver_id) where.driver_id = driver_id;
+
+    if (date) {
+      const startDate = new Date(`${date}T00:00:00.000Z`);
+      const endDate = new Date(`${date}T23:59:59.999Z`);
+      where.arrived_at = { [Op.between]: [startDate, endDate] };
+    } else {
+      // Default to last 2 days (48 hours) as per user requirement
+      const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+      where.arrived_at = { [Op.gte]: twoDaysAgo };
+    }
+
+    if (search) {
+      where[Op.or] = [
+        { stop_name: { [Op.like]: `%${search}%` } },
+        { notes: { [Op.like]: `%${search}%` } },
+      ];
+    }
+
+    const { count, rows: arrivals } = await TripStopArrival.findAndCountAll({
+      where,
+      include: [
+        {
+          model: Trip,
+          as: 'trip',
+          attributes: ['id', 'schedule_code', 'trip_date', 'departure_time', 'status'],
+          include: [{ model: Route, as: 'route', attributes: ['id', 'route_name', 'route_code'] }],
+        },
+        { model: Driver, as: 'driver', attributes: ['id', 'name', 'mobile'] },
+        { model: Vehicle, as: 'vehicle', attributes: ['id', 'registration_number'] },
+        { model: Stop, as: 'stop', attributes: ['id', 'stop_name', 'latitude', 'longitude'] },
+      ],
+      order: [['arrived_at', 'DESC']],
+      limit: l,
+      offset: (p - 1) * l,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        arrivals,
+        pagination: {
+          total: count,
+          page: p,
+          limit: l,
+          pages: Math.ceil(count / l),
+        },
       },
     });
   } catch (err) {
