@@ -451,7 +451,9 @@ class BusRouteSearchService {
     const tripDurationMins = Math.max(5, dropOffsetMins - pickupOffsetMins);
 
     // Calculate fare for pickup and dropoff stop pair
-    let fareAmount = 85;
+    // Routes with NO rate chart entry in the DB are excluded from results
+    let fareAmount = 0;
+    let hasRateChart = false;
     try {
       const pStopId = Number(pickupStop.id || pickupStop.stop_id);
       const dStopId = Number(dropStop.id || dropStop.stop_id);
@@ -459,15 +461,19 @@ class BusRouteSearchService {
         routeId: Number(route.id),
         originStopId: pStopId,
         destinationStopId: dStopId,
-        fallbackFare: route.base_fare || route.fare_amount || 49,
+        fallbackFare: null, // no fallback — must come from DB
       });
-      if (fareRes && fareRes.fare > 0) {
+      if (fareRes && fareRes.fare > 0 && fareRes.source !== 'schedule') {
         fareAmount = fareRes.fare;
-      } else {
-        fareAmount = Number(route.base_fare || route.fare_amount) || 49;
+        hasRateChart = true;
       }
     } catch (e) {
-      fareAmount = Number(route.base_fare || route.fare_amount) || 49;
+      // fare resolution failed — treat as no rate chart
+    }
+
+    // Skip this route entirely if no rate chart found in DB
+    if (!hasRateChart) {
+      return { success: false, reason: 'NO_RATE_CHART', schedules: [], rawSchedules: [] };
     }
 
     const validSchedules = [];
@@ -604,6 +610,21 @@ class BusRouteSearchService {
       const pDistKmVal = Number((pDistMeters / 1000).toFixed(3));
       const dDistKmVal = Number((dDistMeters / 1000).toFixed(3));
 
+      // Full ordered list of all stops on this route
+      const allStops = (routeObj.stops || [])
+        .sort((a, b) => Number(a.stop_sequence || 0) - Number(b.stop_sequence || 0))
+        .map((s) => ({
+          id: Number(s.id || s.stop_id),
+          name: s.stop_name || s.name,
+          stop_order: Number(s.stop_sequence || 0),
+          latitude: s.latitude ? parseFloat(s.latitude) : null,
+          longitude: s.longitude ? parseFloat(s.longitude) : null,
+          address: s.address || null,
+          landmark: s.landmark || null,
+          pickup_allowed: s.pickup_allowed !== false,
+          dropoff_allowed: s.dropoff_allowed !== false,
+        }));
+
       return {
         route_id: Number(routeObj.id),
         route_name: routeObj.route_name || `${cand.pickupStop.name} → ${cand.dropStop.name}`,
@@ -626,6 +647,7 @@ class BusRouteSearchService {
           distance: dDistMeters,
           distance_km: dDistKmVal,
         },
+        all_stops: allStops,
         pickup_distance: pDistMeters,
         dropoff_distance: dDistMeters,
         distance_km: pDistKmVal,
@@ -742,14 +764,18 @@ class BusRouteSearchService {
         });
       }
 
-      availableDates.push({
-        date: formattedDateStr,
-        day: dObj.toLocaleString('en-US', { weekday: 'short' }),
-        month: dObj.toLocaleString('en-US', { month: 'short' }),
-        day_number: String(dObj.getDate()),
-        is_selected: formattedDateStr === travelDate,
-        total_timings: totalTimingsForDate,
-      });
+      // Only include dates that actually have trips running
+      if (totalTimingsForDate > 0 || formattedDateStr === travelDate) {
+        availableDates.push({
+          date: formattedDateStr,
+          day: dObj.toLocaleString('en-US', { weekday: 'short' }),
+          month: dObj.toLocaleString('en-US', { month: 'short' }),
+          day_number: String(dObj.getDate()),
+          is_selected: formattedDateStr === travelDate,
+          total_timings: totalTimingsForDate,
+          has_trips: totalTimingsForDate > 0,
+        });
+      }
     }
 
     const isDirect = directCandidates.length > 0;
