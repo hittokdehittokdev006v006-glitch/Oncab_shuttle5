@@ -62,6 +62,14 @@ router.post('/user-refunds', refundController.getUserRefunds);
 router.get('/booking-details', busController.getBookingDetails);
 router.post('/booking-details', busController.getBookingDetails);
 
+// ── Passenger / User Bus Live Tracking & Stoppage Timing ──
+router.get('/track-booking', busController.trackBooking);
+router.post('/track-booking', busController.trackBooking);
+router.get('/track', busController.trackBooking);
+router.post('/track', busController.trackBooking);
+router.get('/bookings/:id/track', busController.trackBooking);
+router.post('/bookings/:id/track', busController.trackBooking);
+
 // Create / Book Ticket
 router.post('/create-booking', busController.createBooking);
 router.post('/book-ticket', busController.createBooking);
