@@ -6,6 +6,7 @@ const { Trip, Route, Stop, Driver, Vehicle, BusType, Booking, OwnerApprovalReque
 const { logAction } = require('../middleware/auditLog');
 const { hasRole } = require('../utils/roles');
 const { releaseUnusedCouponOnTripCompletion } = require('../services/couponReleaseService');
+const { getOrderedStopsForRoute } = require('../utils/routeStops');
 
 const isOwnerRole = (req) => hasRole(req.user, 'owner');
 const ownerCanReadBookings = (req) => (req.userPermissions || []).some((permission) => ['bookings.read', 'bookings.manage'].includes(permission));
@@ -356,23 +357,8 @@ exports.show = async (req, res, next) => {
       || 40
     );
     item.booked_seats = bookingSum !== null && !isNaN(bookingSum) ? Number(bookingSum) : Number(item.booked_seats || 0);
-    if (item.route && (!item.route.stops || item.route.stops.length === 0)) {
-      const { RouteStop } = require('../models');
-      const routeStops = await RouteStop.findAll({
-        where: { route_id: item.route.id },
-        include: [{ model: Stop, as: 'stop' }],
-        order: [['stop_sequence', 'ASC']],
-      });
-      if (routeStops && routeStops.length > 0) {
-        item.route.stops = routeStops.map((rs) => ({
-          id: rs.stop?.id,
-          stop_name: rs.stop?.stop_name,
-          latitude: rs.stop?.latitude,
-          longitude: rs.stop?.longitude,
-          stop_sequence: rs.stop_sequence,
-          travel_time_minutes: Number(rs.travel_time_minutes) || 0,
-        }));
-      }
+    if (item.route) {
+      item.route.stops = await getOrderedStopsForRoute(item.route.id, item.departure_time);
     }
     res.json({ success: true, data: { ...item, bookings_count: bookingsCount } });
   } catch (err) {

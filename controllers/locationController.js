@@ -3,6 +3,7 @@
 const { hasRole } = require('../utils/roles');
 const { Op } = require('sequelize');
 const { Vehicle, DriverDetail, Trip, Route, Stop, Driver, TripLocation, TripStopArrival } = require('../models');
+const { loadOrderedStopsForRoutes, attachPickupTimesToStops } = require('../utils/routeStops');
 
 const distanceInMeters = (latitude1, longitude1, latitude2, longitude2) => {
   const radians = (degrees) => degrees * Math.PI / 180;
@@ -55,7 +56,7 @@ exports.dashboard = async (req, res, next) => {
     const trips = await Trip.findAll({
       where: tripWhere,
       include: [
-        { model: Route, as: 'route', include: [{ model: Stop, as: 'stops', attributes: ['id', 'stop_name', 'latitude', 'longitude', 'stop_sequence'], required: false }] },
+        { model: Route, as: 'route', attributes: ['id', 'route_name', 'route_code', 'origin_city', 'destination_city', 'status'], required: false },
         {
           model: Driver,
           as: 'driver',
@@ -68,17 +69,25 @@ exports.dashboard = async (req, res, next) => {
       ],
       order: [['trip_date', 'ASC'], ['departure_time', 'ASC']],
     });
-    const routeIds = [...new Set(trips.map((trip) => Number(trip.route_id)))];
+    const routeIds = [...new Set(trips.map((trip) => Number(trip.route_id)).filter(Boolean))];
     const routes = await Route.findAll({
       where: isOwner ? { id: { [Op.in]: routeIds } } : {},
       attributes: ['id', 'route_name', 'route_code', 'origin_city', 'destination_city', 'status'],
-      include: [{ model: Stop, as: 'stops', attributes: ['id', 'stop_name', 'latitude', 'longitude', 'stop_sequence'], required: false }],
       order: [['route_name', 'ASC']],
     });
 
+    const allRouteIds = [...new Set([
+      ...trips.map((trip) => Number(trip.route_id)),
+      ...routes.map((route) => Number(route.id)),
+    ].filter(Boolean))];
+    const routeStopsMap = await loadOrderedStopsForRoutes(allRouteIds);
+
     const serializedTrips = trips.map((trip) => {
       const data = trip.toJSON();
-      data.route?.stops?.sort((a, b) => a.stop_sequence - b.stop_sequence);
+      const baseStops = routeStopsMap.get(Number(data.route_id)) || [];
+      if (data.route) {
+        data.route.stops = attachPickupTimesToStops(baseStops, data.departure_time);
+      }
       return data;
     });
 
@@ -169,7 +178,7 @@ exports.dashboard = async (req, res, next) => {
 
     const routesWithStatus = routes.map((routeModel) => {
       const route = routeModel.toJSON();
-      route.stops?.sort((a, b) => a.stop_sequence - b.stop_sequence);
+      route.stops = routeStopsMap.get(Number(route.id)) || [];
       const routeTrips = serializedTrips.filter((trip) => Number(trip.route_id) === Number(route.id));
       const activeCount = busData.filter((bus) => Number(bus.current_trip?.route_id) === Number(route.id)).length;
       return {
@@ -426,7 +435,6 @@ exports.getTripLocationHistory = async (req, res, next) => {
           model: Route,
           as: 'route',
           attributes: ['id', 'route_name', 'route_code', 'origin_city', 'destination_city'],
-          include: [{ model: Stop, as: 'stops', attributes: ['id', 'stop_name', 'latitude', 'longitude', 'stop_sequence'] }],
         },
         { model: TripStopArrival, as: 'stop_arrivals', required: false },
       ],
@@ -449,8 +457,10 @@ exports.getTripLocationHistory = async (req, res, next) => {
     });
 
     const routeData = trip.route ? trip.route.toJSON() : null;
-    if (routeData?.stops) {
-      routeData.stops.sort((a, b) => a.stop_sequence - b.stop_sequence);
+    if (routeData) {
+      const stopsMap = await loadOrderedStopsForRoutes([routeData.id]);
+      const baseStops = stopsMap.get(Number(routeData.id)) || [];
+      routeData.stops = attachPickupTimesToStops(baseStops, trip.departure_time);
     }
 
     res.json({
@@ -494,7 +504,6 @@ exports.getTripStoppageHistory = async (req, res, next) => {
           model: Route,
           as: 'route',
           attributes: ['id', 'route_name', 'route_code', 'origin_city', 'destination_city'],
-          include: [{ model: Stop, as: 'stops' }],
         },
         { model: TripStopArrival, as: 'stop_arrivals', required: false },
       ],
@@ -508,8 +517,9 @@ exports.getTripStoppageHistory = async (req, res, next) => {
       return res.status(403).json({ success: false, message: 'Unauthorized access to trip' });
     }
 
-    const rawStops = (trip.route?.stops || []).map((s) => s.toJSON());
-    rawStops.sort((a, b) => (a.stop_sequence || 0) - (b.stop_sequence || 0));
+    const stopsMap = await loadOrderedStopsForRoutes([trip.route_id]);
+    const baseStops = stopsMap.get(Number(trip.route_id)) || [];
+    const rawStops = attachPickupTimesToStops(baseStops, trip.departure_time);
 
     const arrivalsMap = new Map();
     (trip.stop_arrivals || []).forEach((arr) => {
