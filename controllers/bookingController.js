@@ -409,6 +409,7 @@ exports.track = async (req, res, next) => {
               address: s.address || null,
               landmark: s.landmark || null,
               stop_sequence: rs.stop_sequence,
+              travel_time_minutes: Number(rs.travel_time_minutes) || 0,
             };
           });
         }
@@ -426,6 +427,7 @@ exports.track = async (req, res, next) => {
           address: stop.address || null,
           landmark: stop.landmark || null,
           stop_sequence: stop.stop_sequence,
+          travel_time_minutes: Number(stop.travel_time_minutes) || 0,
         }));
     })();
 

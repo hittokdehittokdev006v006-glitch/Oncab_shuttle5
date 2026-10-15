@@ -370,6 +370,7 @@ exports.show = async (req, res, next) => {
           latitude: rs.stop?.latitude,
           longitude: rs.stop?.longitude,
           stop_sequence: rs.stop_sequence,
+          travel_time_minutes: Number(rs.travel_time_minutes) || 0,
         }));
       }
     }

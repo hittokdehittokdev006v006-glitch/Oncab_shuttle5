@@ -8,6 +8,7 @@ const RouteStop = sequelize.define('RouteStop', {
   route_id: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false },
   stop_id: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false },
   stop_sequence: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+  travel_time_minutes: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false, defaultValue: 0, comment: 'Minutes from the previous route stop; zero for the first stop' },
   pickup_allowed: { type: DataTypes.BOOLEAN, defaultValue: true },
   dropoff_allowed: { type: DataTypes.BOOLEAN, defaultValue: true },
   status: { type: DataTypes.ENUM('Active', 'Inactive'), defaultValue: 'Active' },

@@ -31,6 +31,7 @@ async function fetchOrderedStopsForRoute(routeId, transaction = null) {
         name: s.stop_name,
         stop_code: s.stop_code,
         stop_sequence: rs.stop_sequence,
+        travel_time_minutes: Number(rs.travel_time_minutes) || 0,
         latitude: s.latitude ? parseFloat(s.latitude) : null,
         longitude: s.longitude ? parseFloat(s.longitude) : null,
         address: s.address,
@@ -211,6 +212,7 @@ exports.create = async (req, res, next) => {
                 route_id: createdRoute.id,
                 stop_id: physicalStopId,
                 stop_sequence: i + 1, // Auto sequence 1, 2, 3...
+                travel_time_minutes: i === 0 ? 0 : Math.max(0, parseInt(stopInput.travel_time_minutes, 10) || 0),
                 pickup_allowed: stopInput.pickup_allowed !== false,
                 dropoff_allowed: stopInput.dropoff_allowed !== false,
                 status: 'Active',
@@ -292,6 +294,7 @@ exports.update = async (req, res, next) => {
                 route_id: route.id,
                 stop_id: physicalStopId,
                 stop_sequence: i + 1, // Recalculated 1..N
+                travel_time_minutes: i === 0 ? 0 : Math.max(0, parseInt(stopInput.travel_time_minutes, 10) || 0),
                 pickup_allowed: stopInput.pickup_allowed !== false,
                 dropoff_allowed: stopInput.dropoff_allowed !== false,
                 status: 'Active',
@@ -348,6 +351,7 @@ exports.duplicate = async (req, res, next) => {
             route_id: created.id,
             stop_id: s.stop_id || s.id,
             stop_sequence: i + 1,
+            travel_time_minutes: Number(s.travel_time_minutes) || 0,
             pickup_allowed: s.pickup_allowed !== false,
             dropoff_allowed: s.dropoff_allowed !== false,
             status: 'Active',
@@ -409,6 +413,7 @@ exports.reverse = async (req, res, next) => {
             route_id: created.id,
             stop_id: s.stop_id || s.id,
             stop_sequence: i + 1, // Reversed 1..N
+            travel_time_minutes: i === 0 ? 0 : (Number(reversedStops[i - 1].travel_time_minutes) || 0),
             pickup_allowed: s.pickup_allowed !== false,
             dropoff_allowed: s.dropoff_allowed !== false,
             status: 'Active',

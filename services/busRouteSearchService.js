@@ -174,6 +174,7 @@ class BusRouteSearchService {
                 stop_name: rs.stop.stop_name,
                 name: rs.stop.stop_name,
                 stop_sequence: Number(rs.stop_sequence || 1),
+                travel_time_minutes: Number(rs.travel_time_minutes) || 0,
                 latitude: parseFloat(rs.stop.latitude),
                 longitude: parseFloat(rs.stop.longitude),
                 address: rs.stop.address,
@@ -190,6 +191,7 @@ class BusRouteSearchService {
                 stop_name: s.stop_name,
                 name: s.stop_name,
                 stop_sequence: Number(s.stop_sequence || 1),
+                travel_time_minutes: 0,
                 latitude: parseFloat(s.latitude),
                 longitude: parseFloat(s.longitude),
                 address: s.address,
@@ -210,6 +212,7 @@ class BusRouteSearchService {
                 stop_name: s.stop_name,
                 name: s.stop_name,
                 stop_sequence: Number(s.stop_sequence || 1),
+                travel_time_minutes: 0,
                 latitude: parseFloat(s.latitude),
                 longitude: parseFloat(s.longitude),
                 address: s.address,
@@ -443,12 +446,9 @@ class BusRouteSearchService {
     const stops = (route.stops || []).sort((a, b) => Number(a.stop_sequence || 0) - Number(b.stop_sequence || 0));
     const pSeq = Number(pickupStop.stop_sequence || 1);
     const dSeq = Number(dropStop.stop_sequence || 2);
-    const totalStops = stops.length || 2;
-    const interStopMins = totalStops > 1 ? Math.round((Number(route.estimated_duration || 60)) / (totalStops - 1)) : 10;
-
-    const pickupOffsetMins = (pSeq - 1) * interStopMins;
-    const dropOffsetMins = (dSeq - 1) * interStopMins;
-    const tripDurationMins = Math.max(5, dropOffsetMins - pickupOffsetMins);
+    const pickupOffsetMins = stops.filter((s) => Number(s.stop_sequence) <= pSeq).reduce((sum, s) => sum + (Number(s.travel_time_minutes) || 0), 0);
+    const dropOffsetMins = stops.filter((s) => Number(s.stop_sequence) <= dSeq).reduce((sum, s) => sum + (Number(s.travel_time_minutes) || 0), 0);
+    const tripDurationMins = Math.max(0, dropOffsetMins - pickupOffsetMins);
 
     // Calculate fare for pickup and dropoff stop pair
     // Routes with NO rate chart entry in the DB are excluded from results
@@ -617,6 +617,7 @@ class BusRouteSearchService {
           id: Number(s.id || s.stop_id),
           name: s.stop_name || s.name,
           stop_order: Number(s.stop_sequence || 0),
+          travel_time_minutes: Number(s.travel_time_minutes) || 0,
           latitude: s.latitude ? parseFloat(s.latitude) : null,
           longitude: s.longitude ? parseFloat(s.longitude) : null,
           address: s.address || null,

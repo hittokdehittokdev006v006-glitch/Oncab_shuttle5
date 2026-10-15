@@ -274,6 +274,7 @@ const fetchSchedulesForRouteStopPair = async ({ routeId, pickupStopId, dropStopI
         stop_name: rs.stop.stop_name,
         name: rs.stop.stop_name,
         stop_sequence: Number(rs.stop_sequence || 1),
+        travel_time_minutes: Number(rs.travel_time_minutes) || 0,
       }));
   } else if (routeObj.stops && routeObj.stops.length > 0) {
     stops = routeObj.stops
@@ -372,13 +373,9 @@ const fetchSchedulesForRouteStopPair = async ({ routeId, pickupStopId, dropStopI
     fareAmount = 85;
   }
 
-  const totalStops = Math.max(2, stops.length);
-  const estDuration = Number(route.estimated_duration) || 60;
-  const minsPerStop = Math.max(5, Math.round(estDuration / Math.max(1, totalStops - 1)));
-
-  const pickupOffsetMins = (pSeq - 1) * minsPerStop;
-  const dropOffsetMins = (dSeq - 1) * minsPerStop;
-  const tripDurationMins = Math.max(10, dropOffsetMins - pickupOffsetMins);
+  const pickupOffsetMins = stops.filter((s) => Number(s.stop_sequence) <= pSeq).reduce((sum, s) => sum + (Number(s.travel_time_minutes) || 0), 0);
+  const dropOffsetMins = stops.filter((s) => Number(s.stop_sequence) <= dSeq).reduce((sum, s) => sum + (Number(s.travel_time_minutes) || 0), 0);
+  const tripDurationMins = Math.max(0, dropOffsetMins - pickupOffsetMins);
 
   const validFormattedSchedules = [];
 
