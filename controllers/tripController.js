@@ -374,6 +374,38 @@ exports.show = async (req, res, next) => {
         }));
       }
     }
+
+    // Compute arrival_time for each stop based on departure_time + cumulative travel_time_minutes
+    if (item.route?.stops && item.route.stops.length > 0) {
+      const depTime = item.departure_time || '08:00:00';
+      const getMinsMidnight = (ts) => {
+        if (!ts || typeof ts !== 'string') return 0;
+        const p = ts.split(':');
+        return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0);
+      };
+      const fmt12h = (ts, off) => {
+        if (!ts) return '';
+        let tot = (getMinsMidnight(ts) + off) % (24 * 60);
+        if (tot < 0) tot += 24 * 60;
+        const h24 = Math.floor(tot / 60);
+        const mn = tot % 60;
+        const ap = h24 >= 12 ? 'PM' : 'AM';
+        const h12 = h24 % 12 || 12;
+        return `${h12}:${String(mn).padStart(2, '0')} ${ap}`;
+      };
+      let cumMins = 0;
+      item.route.stops = item.route.stops
+        .sort((a, b) => Number(a.stop_sequence || 0) - Number(b.stop_sequence || 0))
+        .map((s) => {
+          cumMins += Number(s.travel_time_minutes) || 0;
+          return {
+            ...s,
+            cumulative_minutes: cumMins,
+            arrival_time: fmt12h(depTime, cumMins),
+          };
+        });
+    }
+
     res.json({ success: true, data: { ...item, bookings_count: bookingsCount } });
   } catch (err) {
     next(err);

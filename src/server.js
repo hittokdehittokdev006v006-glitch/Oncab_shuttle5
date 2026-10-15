@@ -99,6 +99,7 @@ app.use(errorHandler);
 
 // ── Start Server ─────────────────────────────────────────────
 const { ensureTripsIndex, ensureTripLocationsTable, ensureTripStopArrivalsTable } = require('../utils/dbIndexMigrator');
+const { syncRouteStopsTable } = require('../utils/routeStopMigrator');
 const { startTripLocationPurgeJob } = require('../services/tripLocationPurgeService');
 
 const PORT = parseInt(process.env.PORT || '4000');
@@ -117,6 +118,8 @@ const startServer = async () => {
       await sequelize.sync({ alter: false });
       console.log('✅ Models synchronized');
     }
+    await syncRouteStopsTable();
+    console.log('[RouteStopMigrator] Route stop travel times synchronized');
     app.listen(PORT, () => {
       console.log(`🚀 OncabShuttle server running on port ${PORT}`);
       console.log(`📡 API: http://localhost:${PORT}/api`);

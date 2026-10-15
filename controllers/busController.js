@@ -277,6 +277,9 @@ const fetchSchedulesForRouteStopPair = async ({ routeId, pickupStopId, dropStopI
         travel_time_minutes: Number(rs.travel_time_minutes) || 0,
       }));
   } else if (routeObj.stops && routeObj.stops.length > 0) {
+    // Try to get travel_time_minutes from route_stops table
+    const rsRows = await RouteStop.findAll({ where: { route_id: routeId }, attributes: ['stop_id', 'travel_time_minutes'], raw: true });
+    const ttMap = new Map(rsRows.map(r => [Number(r.stop_id), Number(r.travel_time_minutes) || 0]));
     stops = routeObj.stops
       .sort((a, b) => Number(a.stop_sequence || 0) - Number(b.stop_sequence || 0))
       .map((s) => ({
@@ -284,17 +287,21 @@ const fetchSchedulesForRouteStopPair = async ({ routeId, pickupStopId, dropStopI
         stop_name: s.stop_name,
         name: s.stop_name,
         stop_sequence: Number(s.stop_sequence || 1),
+        travel_time_minutes: ttMap.get(Number(s.id)) || 0,
       }));
   } else {
     const directStops = await Stop.findAll({
       where: { route_id: routeId },
       order: [['stop_sequence', 'ASC']],
     });
+    const rsRows = await RouteStop.findAll({ where: { route_id: routeId }, attributes: ['stop_id', 'travel_time_minutes'], raw: true });
+    const ttMap = new Map(rsRows.map(r => [Number(r.stop_id), Number(r.travel_time_minutes) || 0]));
     stops = (directStops || []).map((s) => ({
       id: Number(s.id),
       stop_name: s.stop_name,
       name: s.stop_name,
       stop_sequence: Number(s.stop_sequence || 1),
+      travel_time_minutes: ttMap.get(Number(s.id)) || 0,
     }));
   }
 
@@ -418,6 +425,21 @@ const fetchSchedulesForRouteStopPair = async ({ routeId, pickupStopId, dropStopI
     const pickupTimeStr = formatTime12h(depTimeRaw, pickupOffsetMins);
     const dropTimeStr = formatTime12h(depTimeRaw, dropOffsetMins);
 
+    // Compute per-stop arrival schedule
+    const stopSchedule = [];
+    let cumulativeMins = 0;
+    for (const st of stops) {
+      cumulativeMins += Number(st.travel_time_minutes) || 0;
+      stopSchedule.push({
+        stop_id: Number(st.id),
+        name: st.stop_name || st.name,
+        stop_order: Number(st.stop_sequence),
+        travel_time_minutes: Number(st.travel_time_minutes) || 0,
+        cumulative_minutes: cumulativeMins,
+        arrival_time: formatTime12h(depTimeRaw, cumulativeMins),
+      });
+    }
+
     validFormattedSchedules.push({
       schedule_id: schId,
       trip_date: sch.trip_date || searchDateStr,
@@ -428,10 +450,12 @@ const fetchSchedulesForRouteStopPair = async ({ routeId, pickupStopId, dropStopI
       pickup_stop: {
         id: Number(pickupStop.id),
         name: pickupStop.stop_name || pickupStop.name,
+        arrival_time: pickupTimeStr,
       },
       drop_stop: {
         id: Number(dropStop.id),
         name: dropStop.stop_name || dropStop.name,
+        arrival_time: dropTimeStr,
       },
       pickup_time: pickupTimeStr,
       drop_time: dropTimeStr,
@@ -446,6 +470,7 @@ const fetchSchedulesForRouteStopPair = async ({ routeId, pickupStopId, dropStopI
       booking_allowed: true,
       status: 'active',
       pickupMins,
+      stop_schedule: stopSchedule,
     });
   }
 
@@ -1133,6 +1158,43 @@ exports.getUserBookings = async (req, res, next) => {
             longitude: stop.longitude == null ? null : Number(stop.longitude),
           }));
       }
+
+      // Compute scheduled arrival times for pickup and drop stops
+      const depTimeRaw = trip.departure_time || '08:00:00';
+      const routeStops = (trip.route?.stops || []).slice().sort((a2, b2) => (Number(a2.stop_sequence) || 0) - (Number(b2.stop_sequence) || 0));
+
+      // Build a travel_time lookup from route_stops if missing
+      let stopTravelTimes = new Map();
+      if (trip.route?.route_stops && trip.route.route_stops.length > 0) {
+        trip.route.route_stops.forEach(rs => {
+          stopTravelTimes.set(Number(rs.stop_id), Number(rs.travel_time_minutes) || 0);
+        });
+      }
+
+      // Compute stop schedule with arrival times
+      const stopSchedule = [];
+      let cumMins = 0;
+      for (const st of routeStops) {
+        const ttm = stopTravelTimes.get(Number(st.id)) || Number(st.travel_time_minutes) || 0;
+        cumMins += ttm;
+        stopSchedule.push({
+          stop_id: Number(st.id),
+          name: st.stop_name || st.name,
+          stop_order: Number(st.stop_sequence) || 0,
+          travel_time_minutes: ttm,
+          cumulative_minutes: cumMins,
+          arrival_time: formatTime12h(depTimeRaw, cumMins),
+        });
+      }
+
+      // Find pickup and drop stop arrival times
+      const pickupStopEntry = stopSchedule.find(s => Number(s.stop_id) === Number(b.origin_stop_id));
+      const dropStopEntry = stopSchedule.find(s => Number(s.stop_id) === Number(b.destination_stop_id));
+
+      b.scheduled_pickup_time = pickupStopEntry?.arrival_time || null;
+      b.scheduled_drop_time = dropStopEntry?.arrival_time || null;
+      b.duration_minutes = (pickupStopEntry && dropStopEntry) ? Math.max(0, dropStopEntry.cumulative_minutes - pickupStopEntry.cumulative_minutes) : null;
+      b.stop_schedule = stopSchedule;
 
       const rawBusLat = driverDetail.latitude;
       const rawBusLng = driverDetail.longitude;
