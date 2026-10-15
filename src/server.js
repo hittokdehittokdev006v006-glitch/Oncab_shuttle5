@@ -31,6 +31,8 @@ const busRoutes = require('../routes/busRoutes');
 const ownerApprovalRoutes = require('../routes/ownerApprovalRoutes');
 const bannerRoutes = require('../routes/bannerRoutes');
 const payuRoutes = require('../routes/payuRoutes');
+const ownerKycRoutes = require('../routes/ownerKycRoutes');
+const settlementRoutes = require('../routes/settlementRoutes');
 
 
 const app = express();
@@ -85,6 +87,9 @@ app.use('/api2/owner-approval-requests', ownerApprovalRoutes);
 app.use('/api2/banners', bannerRoutes);
 app.use('/api2/bus', busRoutes);
 app.use('/api2/payu', payuRoutes);
+app.use('/api2/owner-kyc', ownerKycRoutes);
+app.use('/api2/owner-settlements', settlementRoutes);
+app.use('/api2/settlements', settlementRoutes);
 app.use('/api2', otherRoutes);
 
 // ── SPA Fallback ─────────────────────────────────────────────
@@ -100,7 +105,7 @@ app.use(notFound);
 app.use(errorHandler);
 
 // ── Start Server ─────────────────────────────────────────────
-const { ensureTripsIndex, ensureTripLocationsTable, ensureTripStopArrivalsTable } = require('../utils/dbIndexMigrator');
+const { ensureTripsIndex, ensureTripLocationsTable, ensureTripStopArrivalsTable, ensureOwnerKycTable, ensureOwnerSettlementsTable, ensureDefaultPermissions } = require('../utils/dbIndexMigrator');
 const { syncRouteStopsTable } = require('../utils/routeStopMigrator');
 const { startTripLocationPurgeJob } = require('../services/tripLocationPurgeService');
 
@@ -113,6 +118,9 @@ const startServer = async () => {
     await ensureTripsIndex();
     await ensureTripLocationsTable();
     await ensureTripStopArrivalsTable();
+    await ensureOwnerKycTable();
+    await ensureOwnerSettlementsTable();
+    await ensureDefaultPermissions();
     // Start automatic retention purge for trip driver locations (>= 48h data kept)
     startTripLocationPurgeJob();
     // Sync models (use migrations in production)

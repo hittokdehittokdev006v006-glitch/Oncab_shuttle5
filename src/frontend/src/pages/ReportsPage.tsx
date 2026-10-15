@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { dashboardAPI } from '../services/api';
-import { Card, Table, Tr, Td, Button, ErrorState, LoadingState, Select, Badge, StatusBadge } from '../components/ui';
+import { dashboardAPI, settlementsAPI } from '../services/api';
+import { Card, Table, Tr, Td, Button, ErrorState, LoadingState, Select, Badge, StatusBadge, Modal, Input } from '../components/ui';
 import {
   BarChart3,
   TrendingUp,
@@ -26,6 +26,10 @@ import {
   Check,
   ArrowRight,
   Sparkles,
+  Banknote,
+  FileCheck,
+  ArrowUpRight,
+  FileText,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { hasRole } from '../utils/roles';
@@ -52,6 +56,74 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ onNotify }) => {
   const [error, setError] = useState('');
   const { user } = useAuth();
   const isAdmin = hasRole(user, 'admin');
+
+  // Previous Week Settlement state
+  const [prevWeekSummary, setPrevWeekSummary] = useState<any>(null);
+  const [prevWeekLoading, setPrevWeekLoading] = useState(false);
+  const [requestModalOpen, setRequestModalOpen] = useState(false);
+  const [requestSubmitting, setRequestSubmitting] = useState(false);
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string>('');
+  const [ownerNote, setOwnerNote] = useState<string>('');
+
+  const fetchPreviousWeekSummary = useCallback(async () => {
+    const isOwner = hasRole(user, 'owner');
+    const targetOwner = isOwner ? user?.id : (ownerFilter ? Number(ownerFilter) : null);
+    if (!targetOwner) {
+      setPrevWeekSummary(null);
+      return;
+    }
+    try {
+      setPrevWeekLoading(true);
+      const resp = await settlementsAPI.getPreviousWeekSummary({ owner_id: targetOwner });
+      const data = resp.data.data;
+      setPrevWeekSummary(data);
+      if (data?.default_vehicle) {
+        setSelectedVehicleId((prev) => prev || String(data.default_vehicle.id));
+      }
+    } catch {
+      setPrevWeekSummary(null);
+    } finally {
+      setPrevWeekLoading(false);
+    }
+  }, [ownerFilter, user]);
+
+  useEffect(() => {
+    fetchPreviousWeekSummary();
+  }, [fetchPreviousWeekSummary]);
+
+  const handleSubmitWeeklySettlement = async () => {
+    if (!prevWeekSummary || !prevWeekSummary.can_request) return;
+    if (!prevWeekSummary.kyc || !prevWeekSummary.kyc.account_number) {
+      onNotify('Please complete your Owner KYC and bank details first before submitting a settlement request.', 'error');
+      return;
+    }
+    const chosenVehicle = (prevWeekSummary.vehicles || []).find((v: any) => String(v.id) === selectedVehicleId) || prevWeekSummary.default_vehicle;
+    if (!chosenVehicle) {
+      onNotify('Please select a vehicle for this settlement request.', 'error');
+      return;
+    }
+    try {
+      setRequestSubmitting(true);
+      await settlementsAPI.create({
+        vehicle_id: chosenVehicle.id,
+        vehicle_number: chosenVehicle.vehicle_number || chosenVehicle.registration_number,
+        requested_amount: prevWeekSummary.total_earned_amount,
+        account_number: prevWeekSummary.kyc.account_number,
+        bank_name: prevWeekSummary.kyc.bank_name,
+        ifsc_code: prevWeekSummary.kyc.ifsc_code,
+        account_holder_name: prevWeekSummary.kyc.account_holder_name,
+        upi_id: prevWeekSummary.kyc.upi_id,
+        owner_notes: ownerNote.trim() || `Settlement request for previous week: ${prevWeekSummary.period.formatted} (${prevWeekSummary.period.tag}) - ${prevWeekSummary.total_completed_trips} trips`,
+      });
+      onNotify('Settlement request submitted successfully for previous week! Admin can now review and approve it.', 'success');
+      setRequestModalOpen(false);
+      fetchPreviousWeekSummary();
+    } catch (err: any) {
+      onNotify(err.response?.data?.message || 'Failed to submit settlement request', 'error');
+    } finally {
+      setRequestSubmitting(false);
+    }
+  };
 
   const fetchReports = useCallback(async () => {
     try {
@@ -582,6 +654,99 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ onNotify }) => {
                 </div>
               </div>
 
+              {/* PREVIOUS WEEK SETTLEMENT REQUEST CARD */}
+              {prevWeekSummary && (
+                <div className="rounded-2xl border border-indigo-500/40 bg-gradient-to-br from-indigo-950/40 via-slate-900 to-slate-900 p-6 shadow-xl relative overflow-hidden">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+                          <Banknote size={22} />
+                        </div>
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h4 className="text-base font-bold text-white tracking-tight">
+                              Previous Week Trip Payout & Settlement
+                            </h4>
+                            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                              {prevWeekSummary.period?.formatted}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            Settlement payout requests can only be submitted for completed trips in the previous calendar week.
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Breakdown Pills */}
+                      <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                        <div className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/60 text-xs">
+                          <span className="text-slate-400">Completed Trips: </span>
+                          <span className="font-bold text-white">{prevWeekSummary.total_completed_trips || 0}</span>
+                        </div>
+
+                        {(prevWeekSummary.bus_type_breakdown || []).map((bt: any, i: number) => (
+                          <div key={i} className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/60 text-xs flex items-center gap-1.5">
+                            <span className="text-slate-400">{bt.label}:</span>
+                            <span className="font-semibold text-white">{bt.count} trips</span>
+                            <span className="text-indigo-400">(@ ₹{Number(bt.rate_per_trip || 0).toLocaleString('en-IN')})</span>
+                            <span className="font-bold text-emerald-400">= ₹{Number(bt.total_amount || 0).toLocaleString('en-IN')}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Right Amount & Action Box */}
+                    <div className="flex flex-col sm:flex-row lg:flex-col items-start sm:items-center lg:items-end justify-between gap-4 p-4 rounded-xl bg-slate-950/70 border border-slate-800 shrink-0">
+                      <div className="text-left sm:text-right">
+                        <div className="text-[11px] font-semibold uppercase text-slate-400 tracking-wider">
+                          Net Receivable (After {prevWeekSummary.tds_percentage}% TDS)
+                        </div>
+                        <div className="text-2xl font-black text-emerald-400 tracking-tight mt-0.5">
+                          ₹{Number(prevWeekSummary.net_payable_amount || 0).toLocaleString('en-IN')}
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          Gross: ₹{Number(prevWeekSummary.total_earned_amount || 0).toLocaleString('en-IN')} · TDS: -₹{Number(prevWeekSummary.tds_amount || 0).toLocaleString('en-IN')}
+                        </div>
+                      </div>
+
+                      {/* Action status */}
+                      {prevWeekSummary.existing_settlement ? (
+                        <div className="flex items-center gap-2.5">
+                          <StatusBadge status={prevWeekSummary.existing_settlement.status} />
+                          <a
+                            href="/bus-operator-dev/owner-settlements"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              window.history.pushState({}, '', '/bus-operator-dev/owner-settlements');
+                              window.dispatchEvent(new PopStateEvent('popstate'));
+                            }}
+                            className="px-3 py-1.5 text-xs font-semibold text-indigo-400 hover:text-indigo-300 hover:underline flex items-center gap-1"
+                          >
+                            View in Settlements ({prevWeekSummary.existing_settlement.settlement_code}) <ArrowUpRight size={13} />
+                          </a>
+                        </div>
+                      ) : prevWeekSummary.can_request ? (
+                        <Button
+                          variant="primary"
+                          size="md"
+                          icon={Banknote}
+                          onClick={() => setRequestModalOpen(true)}
+                          className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-lg shadow-emerald-950/50"
+                        >
+                          Request Previous Week Settlement
+                        </Button>
+                      ) : (
+                        <div className="text-xs text-amber-300 flex items-center gap-1.5 font-medium">
+                          <Clock size={14} />
+                          <span>No completed trips found for previous week</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* SECTION: DRIVER ASSIGNMENT BREAKDOWN */}
               {(activeOwnerTab === 'all' || activeOwnerTab === 'drivers') && (
                 <Card>
@@ -843,9 +1008,11 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ onNotify }) => {
                       'Vehicle & Bus Type',
                       'Driver Assigned',
                       'Status',
-                      'Distinct Seats',
+                      'Seats',
                       'Bookings',
-                      ...(isAdmin ? ['Before Coupons', 'After Coupons'] : ['Revenue Earned']),
+                      'Trip Rate',
+                      'Earned Payout',
+                      ...(isAdmin ? ['Ticket Revenue'] : []),
                     ]}
                     loading={loading}
                     empty={filteredTrips.length === 0}
@@ -891,16 +1058,30 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ onNotify }) => {
                         </Td>
                         <Td className="font-medium text-white">{trip.distinct_seats || 0}</Td>
                         <Td>{trip.booking_count || 0}</Td>
-                        {isAdmin ? (
-                          <>
-                            <Td>₹{Number(trip.gross_revenue || 0).toLocaleString('en-IN')}</Td>
-                            <Td className="font-semibold text-emerald-300">
-                              ₹{Number(trip.net_revenue || 0).toLocaleString('en-IN')}
-                            </Td>
-                          </>
-                        ) : (
-                          <Td className="font-semibold text-emerald-300">
-                            ₹{Number(trip.revenue || 0).toLocaleString('en-IN')}
+                        <Td>
+                          <div className="font-semibold text-white">
+                            ₹{Number(trip.trip_rate || (trip.bus_type_name?.toLowerCase().includes('traveller') ? 1900 : 3000)).toLocaleString('en-IN')}
+                          </div>
+                          <div className="text-[10px] text-slate-400">per trip</div>
+                        </Td>
+                        <Td>
+                          {trip.status === 'Completed' ? (
+                            <div>
+                              <span className="font-bold text-emerald-400">
+                                ₹{Number(trip.earned_amount || trip.trip_rate || 3000).toLocaleString('en-IN')}
+                              </span>
+                              <div className="text-[10px] text-emerald-400/80 font-medium">Completed</div>
+                            </div>
+                          ) : (
+                            <div>
+                              <span className="text-slate-500 font-medium">—</span>
+                              <div className="text-[10px] text-slate-500 italic">Not completed</div>
+                            </div>
+                          )}
+                        </Td>
+                        {isAdmin && (
+                          <Td className="font-semibold text-cyan-300">
+                            ₹{Number(trip.net_revenue || 0).toLocaleString('en-IN')}
                           </Td>
                         )}
                       </Tr>
@@ -1232,6 +1413,159 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ onNotify }) => {
               </Table>
             </Card>
           )}
+
+          {/* REQUEST SETTLEMENT FOR PREVIOUS WEEK MODAL */}
+          <Modal
+            open={requestModalOpen}
+            isOpen={requestModalOpen}
+            onClose={() => setRequestModalOpen(false)}
+            title="Request Settlement — Previous Week"
+            size="lg"
+          >
+            <div className="space-y-4">
+              <div className="p-3 rounded-xl bg-indigo-950/40 border border-indigo-800/40">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">Target Period</span>
+                    <div className="text-sm font-semibold text-white mt-0.5">{prevWeekSummary?.period?.formatted}</div>
+                  </div>
+                  <Badge color="blue">
+                    Previous Week Only
+                  </Badge>
+                </div>
+              </div>
+
+              {/* Breakdown summary */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                  <span className="text-xs text-slate-400">Completed Trips</span>
+                  <div className="text-lg font-bold text-white mt-1">{prevWeekSummary?.total_completed_trips || 0}</div>
+                  <div className="text-[11px] text-slate-400 mt-1">
+                    {(prevWeekSummary?.bus_type_breakdown || []).map((b: any) => `${b.count} ${b.label}`).join(' + ')}
+                  </div>
+                </div>
+                <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                  <span className="text-xs text-slate-400">Gross Earned</span>
+                  <div className="text-lg font-bold text-white mt-1">
+                    ₹{Number(prevWeekSummary?.total_earned_amount || 0).toLocaleString('en-IN')}
+                  </div>
+                  <div className="text-[11px] text-amber-400 mt-1">
+                    -₹{Number(prevWeekSummary?.tds_amount || 0).toLocaleString('en-IN')} ({prevWeekSummary?.tds_percentage || 0}% TDS)
+                  </div>
+                </div>
+                <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-800/40">
+                  <span className="text-xs text-emerald-400">Net Payable</span>
+                  <div className="text-lg font-bold text-emerald-300 mt-1">
+                    ₹{Number(prevWeekSummary?.net_payable_amount || 0).toLocaleString('en-IN')}
+                  </div>
+                  <div className="text-[11px] text-emerald-400/80 mt-1">Direct to Bank</div>
+                </div>
+              </div>
+
+              {/* Bus Type Rates breakdown */}
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <span className="text-xs font-semibold text-slate-300 block mb-2">Trip Rates Breakdown</span>
+                <div className="space-y-1.5">
+                  {(prevWeekSummary?.bus_type_breakdown || []).map((b: any) => (
+                    <div key={b.key} className="flex items-center justify-between text-xs py-1 px-2 rounded bg-slate-800/60">
+                      <span className="text-slate-300">
+                        {b.label} ({b.count} trips @ ₹{Number(b.rate_per_trip).toLocaleString('en-IN')}/trip)
+                      </span>
+                      <span className="font-semibold text-white">₹{Number(b.total_amount).toLocaleString('en-IN')}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Vehicle Selection */}
+              {(prevWeekSummary?.vehicles || []).length > 1 ? (
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1.5">Claim Settlement For Vehicle</label>
+                  <Select
+                    value={selectedVehicleId}
+                    onChange={(val: any) => setSelectedVehicleId(typeof val === 'string' ? val : val?.target?.value || '')}
+                    options={(prevWeekSummary?.vehicles || []).map((v: any) => ({
+                      value: String(v.id),
+                      label: `${v.registration_number || v.vehicle_number} — ${v.company_model || v.model || 'Bus'}`,
+                    }))}
+                  />
+                </div>
+              ) : (
+                <div className="text-xs text-slate-400 flex items-center justify-between p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+                  <span>Selected Vehicle:</span>
+                  <span className="font-semibold text-white">
+                    {prevWeekSummary?.default_vehicle?.registration_number || prevWeekSummary?.default_vehicle?.vehicle_number || 'Primary Vehicle'}
+                  </span>
+                </div>
+              )}
+
+              {/* KYC Banking Info */}
+              {prevWeekSummary?.kyc?.account_number ? (
+                <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-400">Bank Account</span>
+                    <span className="font-medium text-white">{prevWeekSummary.kyc.account_number}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-400">Bank Name & IFSC</span>
+                    <span className="text-slate-300">
+                      {prevWeekSummary.kyc.bank_name || 'Bank'} ({prevWeekSummary.kyc.ifsc_code})
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-400">Beneficiary Name</span>
+                    <span className="text-slate-300">{prevWeekSummary.kyc.account_holder_name || 'Owner'}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-800/40 text-xs text-rose-300 flex flex-col gap-2">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle size={16} className="shrink-0 mt-0.5 text-rose-400" />
+                    <div>
+                      <span className="font-semibold">KYC & Bank Details Missing</span>
+                      <p className="text-slate-400 mt-0.5">
+                        Please update your Bank Account and KYC details in the Owner KYC section before requesting settlements.
+                      </p>
+                    </div>
+                  </div>
+                  <a
+                    href="/bus-operator-dev/owner-kyc"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      window.history.pushState({}, '', '/bus-operator-dev/owner-kyc');
+                      window.dispatchEvent(new PopStateEvent('popstate'));
+                    }}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-400 hover:text-indigo-300 hover:underline pl-6"
+                  >
+                    Go to Owner KYC & Bank Details <ArrowUpRight size={13} />
+                  </a>
+                </div>
+              )}
+
+              {/* Notes */}
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Remarks / Notes (Optional)</label>
+                <Input
+                  value={ownerNote}
+                  onChange={(val: any) => setOwnerNote(typeof val === 'string' ? val : val?.target?.value || '')}
+                  placeholder="e.g. Previous week fuel and driver settlement request"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="secondary" onClick={() => setRequestModalOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  disabled={!prevWeekSummary?.can_request || !prevWeekSummary?.kyc?.account_number || requestSubmitting}
+                  onClick={handleSubmitWeeklySettlement}
+                >
+                  {requestSubmitting ? 'Submitting...' : 'Confirm & Request Payout'}
+                </Button>
+              </div>
+            </div>
+          </Modal>
         </>
       )}
     </div>

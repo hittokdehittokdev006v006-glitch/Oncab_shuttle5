@@ -203,7 +203,6 @@ import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { Toast, LoadingState } from './components/ui';
 import { notificationsAPI } from './services/api';
-import { hasRole } from './utils/roles';
 
 // ── Lazy page imports ──────────────────────────────────────
 
@@ -351,6 +350,18 @@ const OwnerApprovalRequestsPage = React.lazy(() =>
   }))
 );
 
+const OwnerKycPage = React.lazy(() =>
+  import('./pages/OwnerKycPage').then(m => ({
+    default: m.OwnerKycPage
+  }))
+);
+
+const OwnerSettlementsPage = React.lazy(() =>
+  import('./pages/OwnerSettlementsPage').then(m => ({
+    default: m.OwnerSettlementsPage
+  }))
+);
+
 const SettingsPage = React.lazy(() =>
   import('./pages/SettingsPage').then(m => ({
     default: m.SettingsPage
@@ -434,13 +445,15 @@ const VALID_VIEWS: View[] = [
   'owner-requests',
   'banners',
   'payu-webhooks',
-  'settings'
+  'settings',
+  'owner-kyc',
+  'owner-settlements'
 ];
 
 const VIEW_PERMISSIONS: Partial<Record<View, string>> = {
   users: 'users.read', roles: 'roles.read', drivers: 'drivers.read',
   vehicles: 'vehicles.read', 'vehicle-docs': 'vehicles.read', routes: 'routes.read',
-  stops: 'routes.read', trips: 'trips.read', 'scheduled-trips': 'schedules.read',
+  stops: 'stops.read', trips: 'trips.read', 'scheduled-trips': 'schedules.read',
   locations: 'locations.read',
   'driver-location-history': 'locations.read',
   'rate-charts': 'rates.read',
@@ -449,7 +462,10 @@ const VIEW_PERMISSIONS: Partial<Record<View, string>> = {
   refunds: 'refunds.read', 'failed-refunds': 'refunds.read', 'paid-refunds': 'refunds.read',
   notifications: 'notifications.read', reports: 'reports.read', 'audit-logs': 'audit_logs.read',
   banners: 'banners.read',
-  'payu-webhooks': 'refunds.read',
+  'payu-webhooks': 'webhooks.read',
+  'owner-requests': 'owner_requests.read',
+  'owner-kyc': 'owner_kyc.read',
+  'owner-settlements': 'settlements.read',
   settings: 'settings.manage',
 };
 
@@ -477,7 +493,7 @@ const getInitialView = (): View => {
 // ── Main App Inner ─────────────────────────────────────────
 
 const AppInner: React.FC = () => {
-  const { isAuthenticated, isLoading, hasPermission, user } = useAuth();
+  const { isAuthenticated, isLoading, hasPermission, hasRole, user } = useAuth();
 
   const [currentView, setCurrentViewState] =
     useState<View>(getInitialView);
@@ -506,11 +522,24 @@ const AppInner: React.FC = () => {
   const [forgotPwMode, setForgotPwMode] =
     useState(false);
 
+  // ── Check if View is allowed ───────────────────────────
+  const checkViewAllowed = (view: View): boolean => {
+    if (view === 'dashboard') return true;
+    if (view === 'owner-requests' || view === 'owner-kyc' || view === 'owner-settlements') {
+      if (hasRole('admin') || hasRole('owner')) return true;
+    }
+    const permission = VIEW_PERMISSIONS[view];
+    if (!permission) return true;
+    if (hasPermission(permission)) return true;
+    if (view === 'stops' && hasPermission('routes.read')) return true;
+    if (view === 'payu-webhooks' && hasPermission('refunds.read')) return true;
+    return false;
+  };
+
   // ── Change Current View ─────────────────────────────────
 
   const setCurrentView = (view: View) => {
-    const permission = VIEW_PERMISSIONS[view];
-    const allowedView = !permission || hasPermission(permission) ? view : 'dashboard';
+    const allowedView = checkViewAllowed(view) ? view : 'dashboard';
     setCurrentViewState(allowedView);
 
     const routePath = getRoutePath(allowedView);
@@ -538,8 +567,7 @@ const AppInner: React.FC = () => {
         .toLowerCase();
 
       const requestedView = VALID_VIEWS.includes(path as View) ? path as View : 'dashboard';
-      const permission = VIEW_PERMISSIONS[requestedView];
-      const allowedView = !permission || hasPermission(permission) ? requestedView : 'dashboard';
+      const allowedView = checkViewAllowed(requestedView) ? requestedView : 'dashboard';
       setCurrentViewState(allowedView);
       if (allowedView !== requestedView) window.history.replaceState({}, '', getRoutePath(allowedView));
     };
@@ -549,13 +577,14 @@ const AppInner: React.FC = () => {
     return () => {
       window.removeEventListener('popstate', handlePopState);
     };
-  }, [hasPermission]);
+  }, [hasPermission, user]);
 
   useEffect(() => {
     if (isLoading || !isAuthenticated) return;
-    const permission = VIEW_PERMISSIONS[currentView];
-    if (permission && !hasPermission(permission)) setCurrentView('dashboard');
-  }, [currentView, hasPermission, isAuthenticated, isLoading]);
+    if (!checkViewAllowed(currentView)) {
+      setCurrentView('dashboard');
+    }
+  }, [currentView, hasPermission, isAuthenticated, isLoading, user]);
 
   // ── Toast Notification ──────────────────────────────────
 
@@ -642,10 +671,7 @@ const AppInner: React.FC = () => {
     );
   }
 
-  const activeViewPermission = VIEW_PERMISSIONS[currentView];
-  const approvalRoleAllowed = currentView !== 'owner-requests' || hasRole(user, 'admin') || hasRole(user, 'owner');
-  const cancelledViewAllowed = currentView !== 'cancelled-tickets' || !hasRole(user, 'owner');
-  const activeView = approvalRoleAllowed && cancelledViewAllowed && (!activeViewPermission || hasPermission(activeViewPermission)) ? currentView : 'dashboard';
+  const activeView = checkViewAllowed(currentView) ? currentView : 'dashboard';
 
   const renderPage = () => {
     const props = pageProps;
@@ -837,6 +863,23 @@ const AppInner: React.FC = () => {
         return (
           <PageWrapper>
             <OwnerApprovalRequestsPage {...props} />
+          </PageWrapper>
+        );
+
+      case 'owner-kyc':
+        return (
+          <PageWrapper>
+            <OwnerKycPage {...props} />
+          </PageWrapper>
+        );
+
+      case 'owner-settlements':
+        return (
+          <PageWrapper>
+            <OwnerSettlementsPage
+              onNotify={notify}
+              onNavigateSettings={() => setCurrentView('settings')}
+            />
           </PageWrapper>
         );
 

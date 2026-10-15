@@ -4,7 +4,7 @@ import {
   CalendarDays, Ticket, UserCheck, Bus, Package, FileX, RefreshCcw,
   CreditCard, Bell, BarChart3, ClipboardList, Settings, ChevronDown,
   BusFront, X, LogOut, ChevronRight, ChevronLeft, Tag, Loader2, Image,
-  History, Webhook
+  History, Webhook, FileCheck, Banknote
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -17,7 +17,7 @@ export type View =
   | 'passengers' | 'bookings' | 'passes' | 'cancelled-tickets' | 'refunds'
   | 'failed-refunds' | 'paid-refunds' | 'payments' | 'notifications'
   | 'coupons' | 'reports' | 'audit-logs' | 'settings' | 'owner-requests' | 'banners'
-  | 'payu-webhooks';
+  | 'payu-webhooks' | 'owner-kyc' | 'owner-settlements';
 
 interface NavItem {
   id: View;
@@ -44,7 +44,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'users', label: 'Users', icon: Users, permission: 'users.read' },
       { id: 'roles', label: 'Roles & Permissions', icon: Shield, permission: 'roles.read' },
-      { id: 'owner-requests', label: 'Approval Requests', icon: ClipboardList },
+      { id: 'owner-requests', label: 'Approval Requests', icon: ClipboardList, permission: 'owner_requests.read' },
+      { id: 'owner-kyc', label: 'Owner KYC & Bank', icon: FileCheck, permission: 'owner_kyc.read' },
     ]
   },
   {
@@ -98,6 +99,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'Analytics & Logs',
     items: [
       { id: 'reports', label: 'Reports & Analytics', icon: BarChart3, permission: 'reports.read' },
+      { id: 'owner-settlements', label: 'Owner Settlements', icon: Banknote, permission: 'settlements.read' },
       { id: 'audit-logs', label: 'Audit Logs', icon: ClipboardList, permission: 'audit_logs.read' },
     ]
   },
@@ -128,7 +130,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleCollapse,
   unreadNotifications = 0 
 }) => {
-  const { user, logout, hasPermission } = useAuth();
+  const { user, logout, hasPermission, hasRole } = useAuth();
   const { theme } = useTheme();
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [loggingOut, setLoggingOut] = useState(false);
@@ -142,31 +144,39 @@ export const Sidebar: React.FC<SidebarProps> = ({
     try { await logout(); } finally { setLoggingOut(false); }
   };
 
-  // const handleNav = (id: View) => {
-  //   onSelectView(id);
-  //   onClose();
-  // };
   const handleNav = (id: View) => {
-  onSelectView(id);
+    onSelectView(id);
 
-  const routePath = `${ROUTE_PREFIX}/${id}`.replace(/\/+/g, '/');
+    const routePath = `${ROUTE_PREFIX}/${id}`.replace(/\/+/g, '/');
 
-  if (window.location.pathname !== routePath) {
-    window.history.pushState({}, '', routePath);
-  }
+    if (window.location.pathname !== routePath) {
+      window.history.pushState({}, '', routePath);
+    }
 
-  onClose();
-};
+    onClose();
+  };
 
   const isLight = theme === 'light';
-  const roleBadgeColor = user?.role?.name === 'admin' ? '#6366f1' : '#10b981';
+  const isAdmin = hasRole('admin');
+  const isOwner = hasRole('owner');
+  const roleBadgeColor = isAdmin ? '#6366f1' : isOwner ? '#3b82f6' : '#10b981';
+
   const visibleGroups = NAV_GROUPS.map((group) => ({
     ...group,
-    items: group.items.filter((item) =>
-      (item.id !== 'owner-requests' || ['admin', 'owner'].includes(user?.role?.name || '')) &&
-      (item.id !== 'vehicle-docs' || user?.role?.name !== 'owner') &&
-      (!item.permission || hasPermission(item.permission))
-    ),
+    items: group.items.filter((item) => {
+      if (item.id === 'vehicle-docs' && isOwner) return false;
+      if (item.id === 'owner-requests') {
+        return isAdmin || isOwner || (item.permission && hasPermission(item.permission));
+      }
+      if (item.id === 'owner-kyc') {
+        return isAdmin || isOwner || (item.permission && hasPermission(item.permission));
+      }
+      if (item.id === 'owner-settlements') {
+        return isAdmin || isOwner || (item.permission && hasPermission(item.permission));
+      }
+      if (!item.permission) return true;
+      return hasPermission(item.permission) || (item.id === 'stops' && hasPermission('routes.read'));
+    }),
   })).filter((group) => group.items.length > 0);
 
   const sidebarWidth = isCollapsed ? '70px' : '260px';

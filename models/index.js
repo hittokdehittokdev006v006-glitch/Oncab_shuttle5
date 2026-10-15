@@ -37,6 +37,8 @@ const Banner = require('./Banner');
 const TripLocation = require('./TripLocation');
 const TripStopArrival = require('./TripStopArrival');
 const PayuWebhook = require('./PayuWebhook');
+const OwnerKyc = require('./OwnerKyc');
+const OwnerSettlement = require('./OwnerSettlement');
 
 // ─── Role & Permission Associations ─────────────────────
 Role.belongsToMany(Permission, {
@@ -61,6 +63,14 @@ AdminUser.hasMany(Driver, { foreignKey: 'owner_id', as: 'owned_drivers' });
 Driver.belongsTo(AdminUser, { foreignKey: 'owner_id', as: 'owner' });
 AdminUser.hasMany(OwnerApprovalRequest, { foreignKey: 'owner_id', as: 'owner_approval_requests' });
 OwnerApprovalRequest.belongsTo(AdminUser, { foreignKey: 'owner_id', as: 'owner' });
+AdminUser.hasOne(OwnerKyc, { foreignKey: 'owner_id', as: 'kyc' });
+// OwnerKyc.belongsTo(AdminUser, { foreignKey: 'owner_id', as: 'owner' });
+AdminUser.hasMany(OwnerSettlement, { foreignKey: 'owner_id', as: 'settlements' });
+OwnerSettlement.belongsTo(AdminUser, { foreignKey: 'owner_id', as: 'owner' });
+Vehicle.hasMany(OwnerSettlement, { foreignKey: 'vehicle_id', as: 'settlements' });
+OwnerSettlement.belongsTo(Vehicle, { foreignKey: 'vehicle_id', as: 'vehicle' });
+OwnerSettlement.belongsTo(AdminUser, { foreignKey: 'processed_by', as: 'processor' });
+OwnerKyc.belongsTo(AdminUser, { foreignKey: 'owner_id', as: 'owner' });
 
 // ─── Driver Associations ─────────────────────────────────
 Driver.hasOne(DriverDetail, { foreignKey: 'driver_id', as: 'details', onDelete: 'CASCADE' });
@@ -92,6 +102,8 @@ Vehicle.hasMany(BusSchedule, { foreignKey: 'vehicle_id', as: 'bus_schedules' });
 
 Vehicle.hasMany(VehicleDocument, { foreignKey: 'vehicle_id', as: 'documents', onDelete: 'CASCADE' });
 VehicleDocument.belongsTo(Vehicle, { foreignKey: 'vehicle_id', as: 'vehicle' });
+Vehicle.hasMany(OwnerKyc, { foreignKey: 'vehicle_id', as: 'kyc_records' });
+OwnerKyc.belongsTo(Vehicle, { foreignKey: 'vehicle_id', as: 'vehicle' });
 
 // ─── Route & Stop Associations ───────────────────────────
 Route.hasMany(Stop, { foreignKey: 'route_id', as: 'stops', onDelete: 'CASCADE' });
@@ -228,4 +240,6 @@ module.exports = {
   TripLocation,
   TripStopArrival,
   PayuWebhook,
+  OwnerKyc,
+  OwnerSettlement,
 };

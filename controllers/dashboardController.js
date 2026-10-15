@@ -1,7 +1,7 @@
 'use strict';
 
 const { Op, fn, col, literal } = require('sequelize');
-const { Booking, Trip, Driver, Vehicle, Passenger, CustomerUser, Payment, Refund, Route, Stop, AuditLog, AdminUser, Role, BusType } = require('../models');
+const { Booking, Trip, Driver, Vehicle, Passenger, CustomerUser, Payment, Refund, Route, Stop, AuditLog, AdminUser, Role, BusType, SystemSetting } = require('../models');
 const sequelize = require('../config/database');
 const { hasRole } = require('../utils/roles');
 const SeatReservationService = require('../services/seatReservationService');
@@ -648,7 +648,37 @@ exports.revenueReport = async (req, res, next) => {
     const startDateStr = startDate.toISOString().split('T')[0];
     const endDateStr = endDate.toISOString().split('T')[0];
 
-    // 1. Fetch reference options: Owners, Bus Types, Routes
+    // 1. Fetch reference options: Owners, Bus Types, Routes, System Settings
+    let tripRates = { bus: 3000, traveller: 1900 };
+    let tdsPercentage = 2.00;
+    try {
+      const [rateSetting, tdsSetting] = await Promise.all([
+        SystemSetting.findOne({ where: { key: 'owner_trip_rates_by_bus_type' } }),
+        SystemSetting.findOne({ where: { key: 'owner_settlement_tds_percentage' } }),
+      ]);
+      if (rateSetting && rateSetting.value) {
+        const parsed = typeof rateSetting.value === 'object' ? rateSetting.value : JSON.parse(rateSetting.value);
+        if (typeof parsed === 'object' && parsed !== null) tripRates = { ...tripRates, ...parsed };
+      }
+      if (tdsSetting && tdsSetting.value) {
+        const val = parseFloat(tdsSetting.value);
+        if (Number.isFinite(val) && val >= 0) tdsPercentage = val;
+      }
+    } catch {}
+
+    const getRateForBusType = (typeName) => {
+      if (!typeName) return Number(tripRates.bus) || 3000;
+      const lower = String(typeName).toLowerCase().trim();
+      for (const [k, rate] of Object.entries(tripRates)) {
+        const keyLower = String(k).toLowerCase().trim();
+        if (lower.includes(keyLower) || keyLower.includes(lower)) {
+          const val = parseFloat(rate);
+          return Number.isFinite(val) ? val : 3000;
+        }
+      }
+      return Number(tripRates.bus) || 3000;
+    };
+
     const [owners, allBusTypes, allRoutes] = await Promise.all([
       AdminUser.findAll({
         attributes: ['id', 'name'],
@@ -953,6 +983,8 @@ exports.revenueReport = async (req, res, next) => {
         gross_revenue: tripGrossRevenue,
         net_revenue: tripNetRevenue,
         revenue: tripGrossRevenue,
+        trip_rate: getRateForBusType(busTypeName),
+        earned_amount: trip.status === 'Completed' ? getRateForBusType(busTypeName) : 0,
       };
 
       tripBreakdown.push(tripEntry);
@@ -1342,6 +1374,8 @@ exports.revenueReport = async (req, res, next) => {
         selected_owner_analytics,
         booking_revenue_breakdown: isAdmin ? filteredBookingRevenue : [],
         booking_revenue_totals: isAdmin ? bookingRevenueSummary : null,
+        trip_rates: tripRates,
+        tds_percentage: tdsPercentage,
       },
     });
   } catch (err) {
