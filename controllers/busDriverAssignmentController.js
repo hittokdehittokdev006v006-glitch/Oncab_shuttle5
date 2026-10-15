@@ -2,6 +2,7 @@
 
 const { Op, UniqueConstraintError } = require('sequelize');
 const { sequelize, Driver, BusType, Route, Stop, BusRoute, BusStop, BusSchedule, BusDriverAssignment } = require('../models');
+const { getOrderedStopsForRoute } = require('../utils/routeStops');
 
 const assignmentIncludes = [
   {
@@ -26,6 +27,22 @@ const formatScheduleRoute = (schedule) => {
     item.route = item.main_route;
     delete item.main_route;
   }
+  return item;
+};
+
+const attachScheduleStops = async (schedule) => {
+  if (!schedule) return schedule;
+
+  const item = typeof schedule.toJSON === 'function' ? schedule.toJSON() : schedule;
+  const routeId = item.route_id || item.main_route?.id || item.route?.id;
+  const stops = routeId
+    ? await getOrderedStopsForRoute(routeId, item.departure_time)
+    : [];
+
+  // Keep the legacy main_route shape and also expose a clear driver-facing schedule.
+  if (item.main_route) item.main_route.stops = stops;
+  if (item.route) item.route.stops = stops;
+  item.stop_schedule = stops;
   return item;
 };
 
@@ -134,7 +151,10 @@ exports.getAvailableSchedules = async (req, res, next) => {
       });
     }
 
-    const data = available.map(formatScheduleRoute);
+    const data = await Promise.all(available.map(async (schedule) => {
+      const item = formatScheduleRoute(schedule);
+      return attachScheduleStops(item);
+    }));
 
     res.json({
       status: 200,
@@ -222,13 +242,16 @@ exports.getMyAssignments = async (req, res, next) => {
       include: assignmentIncludes,
       order: [['assignment_date', 'DESC'], ['reporting_time', 'ASC']],
     });
-    const data = assignments.map((assignment) => {
+    const data = await Promise.all(assignments.map(async (assignment) => {
       const item = assignment.toJSON();
       item.distance_km = item.start_odometer !== null && item.end_odometer !== null
         ? Number((Number(item.end_odometer) - Number(item.start_odometer)).toFixed(2))
         : null;
+      if (item.schedule) {
+        item.schedule = await attachScheduleStops(item.schedule);
+      }
       return item;
-    });
+    }));
     res.json({ status: 200, success: true, message: 'Assignments retrieved successfully', data });
   } catch (err) {
     next(err);

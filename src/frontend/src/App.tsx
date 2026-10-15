@@ -327,6 +327,12 @@ const RefundsPage = React.lazy(() =>
   }))
 );
 
+const PayuWebhooksPage = React.lazy(() =>
+  import('./pages/PayuWebhooksPage').then(m => ({
+    default: m.PayuWebhooksPage
+  }))
+);
+
 const ReportsPage = React.lazy(() =>
   import('./pages/ReportsPage').then(m => ({
     default: m.ReportsPage
@@ -427,6 +433,7 @@ const VALID_VIEWS: View[] = [
   'audit-logs',
   'owner-requests',
   'banners',
+  'payu-webhooks',
   'settings'
 ];
 
@@ -442,6 +449,7 @@ const VIEW_PERMISSIONS: Partial<Record<View, string>> = {
   refunds: 'refunds.read', 'failed-refunds': 'refunds.read', 'paid-refunds': 'refunds.read',
   notifications: 'notifications.read', reports: 'reports.read', 'audit-logs': 'audit_logs.read',
   banners: 'banners.read',
+  'payu-webhooks': 'refunds.read',
   settings: 'settings.manage',
 };
 
@@ -836,6 +844,13 @@ const AppInner: React.FC = () => {
         return (
           <PageWrapper>
             <BannersPage {...props} />
+          </PageWrapper>
+        );
+
+      case 'payu-webhooks':
+        return (
+          <PageWrapper>
+            <PayuWebhooksPage {...props} />
           </PageWrapper>
         );
 

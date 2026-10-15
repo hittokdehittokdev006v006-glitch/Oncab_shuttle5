@@ -4,19 +4,20 @@ import {
   CalendarDays, Ticket, UserCheck, Bus, Package, FileX, RefreshCcw,
   CreditCard, Bell, BarChart3, ClipboardList, Settings, ChevronDown,
   BusFront, X, LogOut, ChevronRight, ChevronLeft, Tag, Loader2, Image,
-  History
+  History, Webhook
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 const ROUTE_PREFIX = (import.meta.env.VITE_ROUTE_PREFIX || '').replace(/\/$/, '');
-export type View = 
+export type View =
   | 'dashboard' | 'users' | 'roles' | 'drivers' | 'vehicles' | 'vehicle-docs'
   | 'routes' | 'stops' | 'trips' | 'scheduled-trips'
   | 'locations' | 'driver-location-history'
   | 'rate-charts'
   | 'passengers' | 'bookings' | 'passes' | 'cancelled-tickets' | 'refunds'
   | 'failed-refunds' | 'paid-refunds' | 'payments' | 'notifications'
-  | 'coupons' | 'reports' | 'audit-logs' | 'settings' | 'owner-requests' | 'banners';
+  | 'coupons' | 'reports' | 'audit-logs' | 'settings' | 'owner-requests' | 'banners'
+  | 'payu-webhooks';
 
 interface NavItem {
   id: View;
@@ -83,6 +84,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'refunds', label: 'All Refunds', icon: RefreshCcw, permission: 'refunds.read' },
       { id: 'failed-refunds', label: 'Failed Refunds', icon: FileX, permission: 'refunds.read' },
       { id: 'paid-refunds', label: 'Paid Refunds', icon: RefreshCcw, permission: 'refunds.read' },
+      { id: 'payu-webhooks', label: 'PayU Webhooks', icon: Webhook, permission: 'refunds.read' },
     ]
   },
   {

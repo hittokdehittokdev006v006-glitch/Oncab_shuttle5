@@ -193,6 +193,11 @@ export const refundsAPI = {
   verifyPayU: (id: number) => api.patch(`/refunds/${id}/verify-payu`),
   retry: (id: number) => api.patch(`/refunds/${id}/retry`),
   markFailed: (id: number, reason: string) => api.patch(`/refunds/${id}/mark-failed`, { failure_reason: reason }),
+  resyncPayU: (id: number) => api.post(`/payu/refunds/${id}/resync`),
+};
+
+export const payuWebhooksAPI = {
+  list: (params?: object) => api.get('/payu/logs', { params }),
 };
 
 export const passengersAPI = {
