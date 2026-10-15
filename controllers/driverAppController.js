@@ -265,7 +265,7 @@ exports.getAssignedTrips = async (req, res, next) => {
       ],
     });
 
-    const formattedTrips = trips.map((t) => {
+    const formattedTrips = await Promise.all(trips.map(async (t) => {
       const bookings = t.bookings || [];
       const totalBookings = bookings.length;
       const boardedCount = bookings.filter((b) => b.boarding_status === 'boarded').length;
@@ -275,6 +275,10 @@ exports.getAssignedTrips = async (req, res, next) => {
       bookings.forEach((b) => {
         totalBookedSeats += (b.seat_numbers ? b.seat_numbers.length : b.total_seats || 1);
       });
+
+      const stopSchedule = t.route_id
+        ? await getOrderedStopsForRoute(t.route_id, t.departure_time)
+        : [];
 
       return {
         trip_id: t.id,
@@ -286,6 +290,7 @@ exports.getAssignedTrips = async (req, res, next) => {
         trip_date: t.trip_date,
         departure_time: t.departure_time,
         arrival_time: t.arrival_time,
+        stop_schedule: stopSchedule,
         status: t.status,
         vehicle: t.vehicle ? {
           id: t.vehicle.id,
@@ -303,7 +308,7 @@ exports.getAssignedTrips = async (req, res, next) => {
         started_at: t.started_at,
         completed_at: t.completed_at,
       };
-    });
+    }));
 
     res.json({
       status: 200,
@@ -402,6 +407,11 @@ exports.getPassengerManifest = async (req, res, next) => {
       order: [['id', 'ASC']],
     });
 
+    const stopSchedule = trip.route_id
+      ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time)
+      : [];
+    const stopScheduleById = new Map(stopSchedule.map((stop) => [Number(stop.id), stop]));
+
     const manifest = bookings.map((b) => ({
       booking_id: b.id,
       booking_reference: b.booking_reference,
@@ -411,6 +421,8 @@ exports.getPassengerManifest = async (req, res, next) => {
       total_seats: b.total_seats,
       origin_stop: b.origin_stop ? b.origin_stop.stop_name : 'Default Station',
       destination_stop: b.destination_stop ? b.destination_stop.stop_name : 'Destination Station',
+      scheduled_pickup_time: stopScheduleById.get(Number(b.origin_stop_id))?.pickup_time || null,
+      scheduled_drop_time: stopScheduleById.get(Number(b.destination_stop_id))?.pickup_time || null,
       boarding_status: b.booking_status === 'cancelled' ? 'cancelled' : b.boarding_status,
       booking_status: b.booking_status,
       cancellation_reason: b.cancellation_reason || null,
