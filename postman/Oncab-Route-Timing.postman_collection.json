@@ -1,0 +1,163 @@
+{
+  "info": {
+    "_postman_id": "2bf20e54-68cd-487e-a0d7-4c7d63b906f4",
+    "name": "Oncab Shuttle - Route Segment Timing",
+    "description": "Verifies route segment minutes and calculated stop times across passenger search, schedule lookup, booking tracking, and driver APIs. Read-only except for login OTP requests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000/api2", "type": "string" },
+    { "key": "adminToken", "value": "", "type": "string" },
+    { "key": "driverToken", "value": "", "type": "string" },
+    { "key": "routeId", "value": "", "type": "string" },
+    { "key": "pickupStopId", "value": "", "type": "string" },
+    { "key": "middleStopId", "value": "", "type": "string" },
+    { "key": "dropStopId", "value": "", "type": "string" },
+    { "key": "tripId", "value": "", "type": "string" },
+    { "key": "bookingId", "value": "", "type": "string" },
+    { "key": "travelDate", "value": "", "type": "string" },
+    { "key": "expectedMiddleMinutes", "value": "20", "type": "string" },
+    { "key": "expectedDropMinutes", "value": "30", "type": "string" },
+    { "key": "expectedPickupTime", "value": "9:10 AM", "type": "string" },
+    { "key": "expectedDropTime", "value": "9:40 AM", "type": "string" },
+    { "key": "expectedPickupTime24", "value": "09:10:00", "type": "string" },
+    { "key": "expectedDropTime24", "value": "09:40:00", "type": "string" },
+    { "key": "expectedDurationMinutes", "value": "30", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Admin - verify saved route segment minutes",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/routes/{{routeId}}",
+        "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] }
+      },
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Route read succeeds', function () { pm.response.to.have.status(200); });",
+          "const body = pm.response.json();",
+          "pm.expect(body.success).to.eql(true);",
+          "const stops = body.data.stops || [];",
+          "const middle = stops.find((s) => Number(s.id || s.stop_id) === Number(pm.collectionVariables.get('middleStopId')));",
+          "const drop = stops.find((s) => Number(s.id || s.stop_id) === Number(pm.collectionVariables.get('dropStopId')));",
+          "pm.expect(middle, 'middle stop exists on route').to.exist;",
+          "pm.expect(drop, 'drop stop exists on route').to.exist;",
+          "pm.expect(Number(middle.travel_time_minutes)).to.eql(Number(pm.collectionVariables.get('expectedMiddleMinutes')));",
+          "pm.expect(Number(drop.travel_time_minutes)).to.eql(Number(pm.collectionVariables.get('expectedDropMinutes')));"
+        ] }
+      }]
+    },
+    {
+      "name": "2. Passenger - search routes calculates pickup and drop times",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"pickup\": { \"stop_id\": \"{{middleStopId}}\" },\n  \"dropoff\": { \"stop_id\": \"{{dropStopId}}\" },\n  \"date\": \"{{travelDate}}\",\n  \"passengers\": 1\n}", "options": { "raw": { "language": "json" } } },
+        "url": "{{baseUrl}}/bus/search-routes"
+      },
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Search request succeeds', function () { pm.response.to.have.status(200); });",
+          "const body = pm.response.json();",
+          "pm.expect(body.success).to.eql(true);",
+          "const route = (body.routes || []).find((r) => Number(r.route_id) === Number(pm.collectionVariables.get('routeId')));",
+          "pm.expect(route, 'expected route is in search results').to.exist;",
+          "const trip = (route.trips || []).find((t) => Number(t.trip_id || t.schedule_id) === Number(pm.collectionVariables.get('tripId')));",
+          "pm.expect(trip, 'expected trip is in search results').to.exist;",
+          "pm.expect(trip.pickup_time).to.eql(pm.collectionVariables.get('expectedPickupTime'));",
+          "pm.expect(trip.drop_time).to.eql(pm.collectionVariables.get('expectedDropTime'));",
+          "pm.expect(trip.stop_schedule.some((s) => Number(s.stop_id) === Number(pm.collectionVariables.get('dropStopId')) && s.arrival_time === pm.collectionVariables.get('expectedDropTime'))).to.eql(true);"
+        ] }
+      }]
+    },
+    {
+      "name": "3. Passenger - selected-stop schedule timing",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"route_id\": \"{{routeId}}\",\n  \"pickup_stop_id\": \"{{middleStopId}}\",\n  \"drop_stop_id\": \"{{dropStopId}}\",\n  \"date\": \"{{travelDate}}\",\n  \"passengers\": 1\n}", "options": { "raw": { "language": "json" } } },
+        "url": "{{baseUrl}}/bus/schedules"
+      },
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Schedule request succeeds', function () { pm.response.to.have.status(200); });",
+          "const body = pm.response.json();",
+          "pm.expect(body.status).to.eql(true);",
+          "const schedules = Array.isArray(body.schedules) ? body.schedules : Object.values(body.schedules || {}).flat();",
+          "const schedule = schedules.find((s) => Number(s.schedule_id) === Number(pm.collectionVariables.get('tripId')));",
+          "pm.expect(schedule, 'expected trip schedule is returned').to.exist;",
+          "pm.expect(schedule.pickup_time).to.eql(pm.collectionVariables.get('expectedPickupTime'));",
+          "pm.expect(schedule.drop_time).to.eql(pm.collectionVariables.get('expectedDropTime'));",
+          "pm.expect(Number(schedule.duration_minutes)).to.eql(Number(pm.collectionVariables.get('expectedDurationMinutes')));"
+        ] }
+      }]
+    },
+    {
+      "name": "4. Passenger - track booking scheduled pickup/drop times",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"booking_id\": \"{{bookingId}}\"\n}", "options": { "raw": { "language": "json" } } },
+        "url": "{{baseUrl}}/bus/track-booking"
+      },
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Booking tracking succeeds', function () { pm.response.to.have.status(200); });",
+          "const body = pm.response.json();",
+          "pm.expect(body.success).to.eql(true);",
+          "pm.expect(body.data.scheduled_pickup_time).to.eql(pm.collectionVariables.get('expectedPickupTime24'));",
+          "pm.expect(body.data.scheduled_drop_time).to.eql(pm.collectionVariables.get('expectedDropTime24'));",
+          "pm.expect(body.data.route_stoppages.stops.some((s) => Number(s.stop_id) === Number(pm.collectionVariables.get('dropStopId')) && s.scheduled_time === pm.collectionVariables.get('expectedDropTime24'))).to.eql(true);"
+        ] }
+      }]
+    },
+    {
+      "name": "5. Driver - assigned trip contains manual stop schedule",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/bus-driver/assigned-trips?date={{travelDate}}",
+        "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{driverToken}}", "type": "string" }] }
+      },
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Assigned trips request succeeds', function () { pm.response.to.have.status(200); });",
+          "const body = pm.response.json();",
+          "pm.expect(body.success).to.eql(true);",
+          "const trip = (body.data || []).find((t) => Number(t.trip_id) === Number(pm.collectionVariables.get('tripId')));",
+          "pm.expect(trip, 'expected trip is assigned to this driver').to.exist;",
+          "const drop = (trip.stop_schedule || []).find((s) => Number(s.id) === Number(pm.collectionVariables.get('dropStopId')));",
+          "pm.expect(drop, 'drop stop is in driver schedule').to.exist;",
+          "pm.expect(drop.pickup_time).to.eql(pm.collectionVariables.get('expectedDropTime24'));"
+        ] }
+      }]
+    },
+    {
+      "name": "6. Driver - manifest includes passenger scheduled pickup/drop",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/bus-driver/trips/{{tripId}}/manifest",
+        "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{driverToken}}", "type": "string" }] }
+      },
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Manifest request succeeds', function () { pm.response.to.have.status(200); });",
+          "const body = pm.response.json();",
+          "pm.expect(body.success).to.eql(true);",
+          "const passenger = (body.data.passengers || []).find((p) => Number(p.booking_id) === Number(pm.collectionVariables.get('bookingId')));",
+          "pm.expect(passenger, 'configured booking is present in manifest').to.exist;",
+          "pm.expect(passenger.scheduled_pickup_time).to.eql(pm.collectionVariables.get('expectedPickupTime24'));",
+          "pm.expect(passenger.scheduled_drop_time).to.eql(pm.collectionVariables.get('expectedDropTime24'));"
+        ] }
+      }]
+    }
+  ]
+}

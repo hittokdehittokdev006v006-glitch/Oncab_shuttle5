@@ -10,7 +10,7 @@ interface RouteStopItem {
   latitude: string;
   longitude: string;
   stop_sequence: number;
-  travel_time_minutes: number;
+  travel_time_minutes: string;
   address: string;
 }
 
@@ -273,7 +273,7 @@ export const RouteCreationPage: React.FC<RouteCreationPageProps> = ({ onNotify }
           latitude: s.latitude != null ? String(s.latitude) : '',
           longitude: s.longitude != null ? String(s.longitude) : '',
           stop_sequence: idx + 1,
-          travel_time_minutes: Number(s.travel_time_minutes) || 0,
+          travel_time_minutes: s.travel_time_minutes != null ? String(s.travel_time_minutes) : '0',
           address: s.address || '',
         }))
       );
@@ -302,7 +302,7 @@ export const RouteCreationPage: React.FC<RouteCreationPageProps> = ({ onNotify }
         latitude: stop.latitude != null ? String(stop.latitude) : '',
         longitude: stop.longitude != null ? String(stop.longitude) : '',
         stop_sequence: prev.length + 1,
-        travel_time_minutes: 0,
+        travel_time_minutes: '0',
         address: stop.address || '',
       },
     ]);
@@ -363,7 +363,7 @@ export const RouteCreationPage: React.FC<RouteCreationPageProps> = ({ onNotify }
             latitude: s.latitude != null ? String(s.latitude) : '',
             longitude: s.longitude != null ? String(s.longitude) : '',
             stop_sequence: prev.length + newItems.length + 1,
-            travel_time_minutes: 0,
+            travel_time_minutes: '0',
             address: s.address || '',
           });
         }
@@ -868,8 +868,8 @@ export const RouteCreationPage: React.FC<RouteCreationPageProps> = ({ onNotify }
                           <input
                             type="number"
                             min="0"
-                            value={stop.travel_time_minutes ?? 0}
-                            onChange={(e) => setStopsList((prev) => prev.map((item, idx) => idx === index ? { ...item, travel_time_minutes: Math.max(0, Number(e.target.value) || 0) } : item))}
+                            value={stop.travel_time_minutes}
+                            onChange={(e) => setStopsList((prev) => prev.map((item, idx) => idx === index ? { ...item, travel_time_minutes: e.target.value } : item))}
                             className="w-20 rounded bg-slate-900 border border-slate-600 px-2 py-1 text-xs text-white"
                           />
                         </label>

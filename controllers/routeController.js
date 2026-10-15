@@ -3,6 +3,7 @@
 const { Op } = require('sequelize');
 const { Route, Stop, RouteStop, sequelize } = require('../models');
 const { logAction } = require('../middleware/auditLog');
+const { syncRouteStopsTable } = require('../utils/routeStopMigrator');
 
 const buildPagination = (page, limit) => {
   const p = Math.max(1, parseInt(page) || 1);
@@ -10,10 +11,18 @@ const buildPagination = (page, limit) => {
   return { offset: (p - 1) * l, limit: l, page: p };
 };
 
+const getSegmentDurationTotal = (stops) => stops
+  .slice(1)
+  .reduce((total, stop) => total + Math.max(0, parseInt(stop.travel_time_minutes, 10) || 0), 0);
+
+const includesSegmentDurations = (stops) => Array.isArray(stops)
+  && stops.slice(1).some((stop) => stop.travel_time_minutes !== undefined && stop.travel_time_minutes !== null && stop.travel_time_minutes !== '');
+
 /**
  * Helper to fetch ordered stops for a route using route_stops mapping with fallback to legacy stops
  */
 async function fetchOrderedStopsForRoute(routeId, transaction = null) {
+  await syncRouteStopsTable();
   const routeStops = await RouteStop.findAll({
     where: { route_id: routeId },
     include: [{ model: Stop, as: 'stop' }],
@@ -157,6 +166,7 @@ exports.show = async (req, res, next) => {
 // ── 3. Create Route (With Inline / Reused Physical Stops) ─────────────
 exports.create = async (req, res, next) => {
   try {
+    await syncRouteStopsTable();
     const body = req.body || {};
     const { route_name, route_code, origin_city, destination_city, total_distance, estimated_duration, description, status, stops } = body;
 
@@ -175,7 +185,7 @@ exports.create = async (req, res, next) => {
           origin_city: String(origin_city).trim(),
           destination_city: String(destination_city).trim(),
           total_distance: total_distance || 0,
-          estimated_duration: estimated_duration || 0,
+          estimated_duration: includesSegmentDurations(stops) ? getSegmentDurationTotal(stops) : (estimated_duration || 0),
           description: description || null,
           status: status || 'Active',
         },
@@ -253,11 +263,15 @@ exports.create = async (req, res, next) => {
 // ── 4. Update Route (Re-sync RouteStop Sequences) ────────────────────
 exports.update = async (req, res, next) => {
   try {
+    await syncRouteStopsTable();
     const route = await Route.findByPk(req.params.id);
     if (!route) return res.status(404).json({ success: false, message: 'Route not found' });
 
     const body = req.body || {};
     const { stops, ...routeFields } = body;
+    if (includesSegmentDurations(stops)) {
+      routeFields.estimated_duration = getSegmentDurationTotal(stops);
+    }
 
     await sequelize.transaction(async (transaction) => {
       await route.update(routeFields, { transaction });
