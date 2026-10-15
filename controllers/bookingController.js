@@ -26,6 +26,25 @@ const buildPagination = (page, limit) => {
   return { offset: (p - 1) * l, limit: l, page: p };
 };
 
+/** Convert HH:MM:SS string to minutes from midnight */
+const getMinutesFromMidnight = (timeStr) => {
+  if (!timeStr || typeof timeStr !== 'string') return 0;
+  const parts = timeStr.split(':');
+  return (parseInt(parts[0], 10) || 0) * 60 + (parseInt(parts[1], 10) || 0);
+};
+
+/** Format 24h time string + offset to 12h AM/PM */
+const format12HourTime = (timeStr, offsetMins = 0) => {
+  if (!timeStr) return '';
+  let totalMins = (getMinutesFromMidnight(timeStr) + offsetMins) % (24 * 60);
+  if (totalMins < 0) totalMins += 24 * 60;
+  const h24 = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  const ampm = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 || 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+};
+
 const BOOKING_INCLUDE = [
   {
     model: Trip,
@@ -431,6 +450,19 @@ exports.track = async (req, res, next) => {
         }));
     })();
 
+    // Compute arrival_time for each stop based on departure_time + cumulative travel_time_minutes
+    const depTimeRaw = trip.departure_time || '08:00:00';
+    let cumMins = 0;
+    for (const st of tripStops) {
+      cumMins += Number(st.travel_time_minutes) || 0;
+      st.cumulative_minutes = cumMins;
+      st.arrival_time = format12HourTime(depTimeRaw, cumMins);
+    }
+
+    // Find scheduled pickup/drop times
+    const pickupStopEntry = tripStops.find(s => Number(s.id) === Number(bookingData.origin_stop_id));
+    const dropStopEntry = tripStops.find(s => Number(s.id) === Number(bookingData.destination_stop_id));
+
     const originStop = bookingData.origin_stop || {};
     const destinationStop = bookingData.destination_stop || {};
 
@@ -530,6 +562,9 @@ exports.track = async (req, res, next) => {
         passenger_name: booking.passenger_name,
         passenger_mobile: booking.passenger_mobile,
         travel_date: booking.travel_date,
+        scheduled_pickup_time: pickupStopEntry?.arrival_time || null,
+        scheduled_drop_time: dropStopEntry?.arrival_time || null,
+        scheduled_duration_minutes: (pickupStopEntry && dropStopEntry) ? Math.max(0, dropStopEntry.cumulative_minutes - pickupStopEntry.cumulative_minutes) : null,
         bus_location: busLocation,
         trip_stops: tripStops,
         boarding_stop: boardingStop,

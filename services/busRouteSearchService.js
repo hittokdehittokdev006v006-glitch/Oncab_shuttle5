@@ -183,6 +183,9 @@ class BusRouteSearchService {
                 dropoff_allowed: rs.dropoff_allowed !== false,
               }));
           } else if (routeObj.stops && routeObj.stops.length > 0) {
+            // Fetch real travel_time_minutes from route_stops table
+            const rsRows = await RouteStop.findAll({ where: { route_id: r.id }, attributes: ['stop_id', 'travel_time_minutes'], raw: true });
+            const ttMap = new Map(rsRows.map(row => [Number(row.stop_id), Number(row.travel_time_minutes) || 0]));
             finalStops = routeObj.stops
               .sort((a, b) => Number(a.stop_sequence || 0) - Number(b.stop_sequence || 0))
               .map((s) => ({
@@ -191,7 +194,7 @@ class BusRouteSearchService {
                 stop_name: s.stop_name,
                 name: s.stop_name,
                 stop_sequence: Number(s.stop_sequence || 1),
-                travel_time_minutes: 0,
+                travel_time_minutes: ttMap.get(Number(s.id)) || 0,
                 latitude: parseFloat(s.latitude),
                 longitude: parseFloat(s.longitude),
                 address: s.address,
@@ -206,13 +209,16 @@ class BusRouteSearchService {
               order: [['stop_sequence', 'ASC']],
             });
             if (directStops && directStops.length > 0) {
+              // Fetch real travel_time_minutes from route_stops table
+              const rsRows = await RouteStop.findAll({ where: { route_id: r.id }, attributes: ['stop_id', 'travel_time_minutes'], raw: true });
+              const ttMap = new Map(rsRows.map(row => [Number(row.stop_id), Number(row.travel_time_minutes) || 0]));
               finalStops = directStops.map((s) => ({
                 id: Number(s.id),
                 stop_id: Number(s.id),
                 stop_name: s.stop_name,
                 name: s.stop_name,
                 stop_sequence: Number(s.stop_sequence || 1),
-                travel_time_minutes: 0,
+                travel_time_minutes: ttMap.get(Number(s.id)) || 0,
                 latitude: parseFloat(s.latitude),
                 longitude: parseFloat(s.longitude),
                 address: s.address,
@@ -610,21 +616,26 @@ class BusRouteSearchService {
       const pDistKmVal = Number((pDistMeters / 1000).toFixed(3));
       const dDistKmVal = Number((dDistMeters / 1000).toFixed(3));
 
-      // Full ordered list of all stops on this route
-      const allStops = (routeObj.stops || [])
-        .sort((a, b) => Number(a.stop_sequence || 0) - Number(b.stop_sequence || 0))
-        .map((s) => ({
-          id: Number(s.id || s.stop_id),
-          name: s.stop_name || s.name,
-          stop_order: Number(s.stop_sequence || 0),
-          travel_time_minutes: Number(s.travel_time_minutes) || 0,
-          latitude: s.latitude ? parseFloat(s.latitude) : null,
-          longitude: s.longitude ? parseFloat(s.longitude) : null,
-          address: s.address || null,
-          landmark: s.landmark || null,
-          pickup_allowed: s.pickup_allowed !== false,
-          dropoff_allowed: s.dropoff_allowed !== false,
-        }));
+      // Full ordered list of all stops on this route with cumulative arrival offsets
+      const sortedStops = (routeObj.stops || [])
+        .sort((a, b) => Number(a.stop_sequence || 0) - Number(b.stop_sequence || 0));
+      let cumMinsForStops = 0;
+      const allStops = sortedStops.map((s) => {
+          cumMinsForStops += Number(s.travel_time_minutes) || 0;
+          return {
+            id: Number(s.id || s.stop_id),
+            name: s.stop_name || s.name,
+            stop_order: Number(s.stop_sequence || 0),
+            travel_time_minutes: Number(s.travel_time_minutes) || 0,
+            cumulative_minutes: cumMinsForStops,
+            latitude: s.latitude ? parseFloat(s.latitude) : null,
+            longitude: s.longitude ? parseFloat(s.longitude) : null,
+            address: s.address || null,
+            landmark: s.landmark || null,
+            pickup_allowed: s.pickup_allowed !== false,
+            dropoff_allowed: s.dropoff_allowed !== false,
+          };
+        });
 
       return {
         route_id: Number(routeObj.id),
@@ -658,15 +669,28 @@ class BusRouteSearchService {
           currency: 'INR',
           display: `₹${cand.fareAmount.toFixed(0)}`,
         },
-        trips: cand.schedules.map((sch) => ({
-          trip_id: sch.schedule_id,
-          schedule_id: sch.schedule_id,
-          departure_time: sch.departure_time,
-          pickup_time: sch.pickup_time,
-          drop_time: sch.drop_time,
-          available_seats: sch.available_seats,
-          bus_type: sch.bus_type?.name || 'AC Executive Shuttle',
-        })),
+        trips: cand.schedules.map((sch) => {
+          // Compute per-stop arrival schedule for this trip
+          const baseDepTime = sch.departure_time || '08:00:00';
+          const stopSchedule = allStops.map((st) => ({
+            stop_id: st.id,
+            name: st.name,
+            stop_order: st.stop_order,
+            travel_time_minutes: st.travel_time_minutes,
+            cumulative_minutes: st.cumulative_minutes,
+            arrival_time: format12HourTime(baseDepTime, st.cumulative_minutes),
+          }));
+          return {
+            trip_id: sch.schedule_id,
+            schedule_id: sch.schedule_id,
+            departure_time: sch.departure_time,
+            pickup_time: sch.pickup_time,
+            drop_time: sch.drop_time,
+            available_seats: sch.available_seats,
+            bus_type: sch.bus_type?.name || 'AC Executive Shuttle',
+            stop_schedule: stopSchedule,
+          };
+        }),
       };
     });
 
