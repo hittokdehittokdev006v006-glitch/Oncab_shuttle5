@@ -8,6 +8,17 @@ const { calculateCouponDiscount } = require('../utils/coupon');
 const BusStopSearchService = require('../services/busStopSearchService');
 const BusRouteSearchService = require('../services/busRouteSearchService');
 const SeatReservationService = require('../services/seatReservationService');
+const refundController = require('./refundController');
+
+// Refund admin-approval setting (system_settings.refund_admin_approval_required).
+// 'true' (default)  -> PayU bank refunds wait for admin approval.
+// 'false'           -> refund is initiated with PayU immediately on user cancel.
+const refundApprovalRequired = async () => {
+  const { SystemSetting } = require('../models');
+  const setting = await SystemSetting.findOne({ where: { key: 'refund_admin_approval_required' } });
+  if (!setting) return true;
+  return String(setting.value).trim().toLowerCase() === 'true';
+};
 const { confirmPaidBooking } = require('../services/bookingConfirmationService');
 const { getOrderedStopsForRoute } = require('../utils/routeStops');
 
@@ -2619,6 +2630,9 @@ exports.cancelBooking = async (req, res, next) => {
     let refundRecord = null;
     let walletCredited = false;
     let walletBalanceAfter = null;
+    let autoPayuRefund = null;
+    let autoPayuPayment = null;
+    let autoPayuBooking = null;
 
     const refundAmount = Number(booking.final_amount || 0);
 
@@ -2682,7 +2696,11 @@ exports.cancelBooking = async (req, res, next) => {
           await payment.update({ status: 'refunded' }, { transaction: t });
         }
       } else {
-        // Gateway Bank Refund via PayU (queued for admin processing or PayU gateway initiation)
+        // Gateway Bank Refund via PayU.
+        // If the refund admin-approval setting is DISABLED, initiate the refund
+        // with PayU right away (no admin approval needed). Otherwise queue it
+        // as pending for admin approval.
+        const approvalRequired = await refundApprovalRequired();
         refundRecord = await Refund.create(
           {
             booking_id: booking.id,
@@ -2693,9 +2711,17 @@ exports.cancelBooking = async (req, res, next) => {
             refund_reason: cancellation_reason,
             refund_method: 'payu',
             status: 'pending',
+            payu_txnid: payment?.payu_txnid || null,
+            payu_mihpayid: payment?.payu_mihpayid || null,
           },
           { transaction: t }
         );
+
+        if (!approvalRequired && payment && payment.payu_mihpayid) {
+          autoPayuRefund = refundRecord;
+          autoPayuPayment = payment;
+          autoPayuBooking = booking;
+        }
       }
     }
 
@@ -2704,10 +2730,35 @@ exports.cancelBooking = async (req, res, next) => {
     // --------------------------------------------------
     await t.commit();
 
+    // --------------------------------------------------
+    // 11. AUTO-INITIATE PAYU REFUND (if admin approval is disabled)
+    //     Runs AFTER commit so the network call to PayU never holds
+    //     a DB transaction open.
+    // --------------------------------------------------
+    let payuRefundInitiated = false;
+    if (autoPayuRefund && autoPayuPayment) {
+      try {
+        const { refundStatus } = await refundController.runPayURefund({
+          refund: autoPayuRefund,
+          payment: autoPayuPayment,
+          booking: autoPayuBooking,
+          notes: 'Auto-initiated on user cancellation (admin approval disabled in settings)',
+        });
+        payuRefundInitiated = refundStatus !== 'failed';
+        // refresh the record so the response reflects the real status
+        refundRecord = await Refund.findByPk(autoPayuRefund.id);
+      } catch (autoErr) {
+        console.error('Auto PayU refund initiation failed:', autoErr?.message || autoErr);
+        refundRecord = await Refund.findByPk(autoPayuRefund.id);
+      }
+    }
+
     const responseMessage = refundRecord
       ? walletCredited
         ? `Booking cancelled successfully. Refund of ₹${refundAmount} has been credited to your wallet immediately.`
-        : `Booking cancelled successfully. Refund request of ₹${refundAmount} to bank via PayU is pending processing.`
+        : payuRefundInitiated
+          ? `Booking cancelled successfully. Refund of ₹${refundAmount} has been initiated to your bank via PayU and will reflect once processed.`
+          : `Booking cancelled successfully. Refund request of ₹${refundAmount} to bank via PayU is pending processing.`
       : 'Booking cancelled successfully';
 
     return res.status(200).json({
@@ -2725,6 +2776,8 @@ exports.cancelBooking = async (req, res, next) => {
               refund_amount: Number(refundRecord.refund_amount),
               refund_status: refundRecord.status,
               refund_method: refundRecord.refund_method,
+              payu_txnid: refundRecord.payu_txnid || null,
+              payu_mihpayid: refundRecord.payu_mihpayid || null,
               ...(walletCredited ? { wallet_balance: walletBalanceAfter } : {}),
             }
           : null,

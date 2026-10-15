@@ -30,6 +30,7 @@ const internalRoutes = require('../routes/internal');
 const busRoutes = require('../routes/busRoutes');
 const ownerApprovalRoutes = require('../routes/ownerApprovalRoutes');
 const bannerRoutes = require('../routes/bannerRoutes');
+const payuRoutes = require('../routes/payuRoutes');
 
 
 const app = express();
@@ -83,6 +84,7 @@ app.use('/api2/refunds', refundRoutes);
 app.use('/api2/owner-approval-requests', ownerApprovalRoutes);
 app.use('/api2/banners', bannerRoutes);
 app.use('/api2/bus', busRoutes);
+app.use('/api2/payu', payuRoutes);
 app.use('/api2', otherRoutes);
 
 // ── SPA Fallback ─────────────────────────────────────────────

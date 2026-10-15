@@ -14,6 +14,8 @@ const Refund = sequelize.define('Refund', {
   refund_reason: { type: DataTypes.TEXT, defaultValue: null },
   gateway_refund_id: { type: DataTypes.STRING(100), defaultValue: null },
   gateway_response: { type: DataTypes.JSON, defaultValue: null },
+  payu_txnid: { type: DataTypes.STRING(100), defaultValue: null },
+  payu_mihpayid: { type: DataTypes.STRING(100), defaultValue: null },
   status: { type: DataTypes.ENUM('pending', 'processing', 'completed', 'failed'), defaultValue: 'pending' },
   initiated_by: { type: DataTypes.INTEGER.UNSIGNED, defaultValue: null },
   processed_at: { type: DataTypes.DATE, defaultValue: null },

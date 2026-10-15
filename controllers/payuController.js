@@ -149,6 +149,7 @@ exports.callback = async (req, res, next) => {
         payment_status: succeeded ? 'paid' : 'failed',
         payment_method: 'payu',
         transaction_id: txnid,
+        payu_mihpayid: body.mihpayid || booking.payu_mihpayid || null,
       }, { transaction });
       if (succeeded) {
         try {

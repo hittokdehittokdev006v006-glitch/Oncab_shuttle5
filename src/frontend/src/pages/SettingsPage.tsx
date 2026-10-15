@@ -18,6 +18,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
     currency: 'INR',
     currency_symbol: '₹',
     payu_refund_mode: 'standard',
+    refund_admin_approval_required: 'true',
     bus_stop_search_radius_km: '1',
     cancellation_fee_percentage: '10',
     allow_cancellation_hours: '2',
@@ -67,6 +68,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
       const payload = Object.entries(settings)
         .filter(([key]) => !['razorpay_key_id', 'razorpay_secret'].includes(key))
         .map(([key, value]) => {
+          if (key === 'refund_admin_approval_required') {
+            return { key, value, type: 'boolean', group: 'refund', label: 'Require Admin Approval for Refunds', description: 'When enabled, PayU (bank) refunds wait for admin approval. When disabled, the refund is initiated with PayU automatically as soon as the user cancels.' };
+          }
           if (key === 'payu_refund_mode') {
             return { key, value, type: 'string', group: 'payment', label: 'PayU Refund Mode', description: 'Select whether PayU refunds are submitted immediately or handled through the standard refund flow.' };
           }
@@ -204,6 +208,23 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
                   placeholder="Select PayU refund mode"
                 />
                 <p className="text-xs text-slate-400">Instant submits the PayU refund request as soon as an admin processes it. Standard uses PayU’s normal refund flow; final settlement timing is determined by PayU.</p>
+              </div>
+
+              <div>
+                <label className="flex items-start gap-3 text-slate-300 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settings.refund_admin_approval_required !== 'false'}
+                    onChange={(e) => handleChange('refund_admin_approval_required', e.target.checked ? 'true' : 'false')}
+                    className="mt-0.5 w-4 h-4 rounded bg-slate-800 border-slate-700 text-indigo-500 focus:ring-0"
+                  />
+                  <span>
+                    <span className="font-medium text-white">Require admin approval for PayU (bank) refunds</span>
+                    <span className="block text-xs text-slate-400 mt-0.5">
+                      Enabled: refunds wait for an admin to approve them in the refunds panel. Disabled: the refund is sent to PayU automatically the moment the user cancels — no approval needed.
+                    </span>
+                  </span>
+                </label>
               </div>
             </div>
           )}
