@@ -9,6 +9,7 @@ const BusStopSearchService = require('../services/busStopSearchService');
 const BusRouteSearchService = require('../services/busRouteSearchService');
 const SeatReservationService = require('../services/seatReservationService');
 const { confirmPaidBooking } = require('../services/bookingConfirmationService');
+const { getOrderedStopsForRoute } = require('../utils/routeStops');
 
 const buildPagination = (page, limit) => {
   const p = Math.max(1, parseInt(page) || 1);
@@ -1518,8 +1519,9 @@ exports.trackBooking = async (req, res, next) => {
       arrivalsMap.set(Number(arr.stop_id), arr);
     });
 
-    const rawStops = (trip.route?.stops || []).map((s) => s.toJSON());
-    rawStops.sort((a, b) => (Number(a.stop_sequence) || 0) - (Number(b.stop_sequence) || 0));
+    const rawStops = trip.route_id
+      ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time)
+      : [];
 
     let reachedStopsCount = 0;
     const routeStoppages = rawStops.map((stop) => {
@@ -1534,7 +1536,7 @@ exports.trackBooking = async (req, res, next) => {
         stop_sequence: stop.stop_sequence,
         latitude: stop.latitude != null ? Number(stop.latitude) : null,
         longitude: stop.longitude != null ? Number(stop.longitude) : null,
-        scheduled_time: stop.pickup_time || null,
+        scheduled_time: stop.pickup_time || trip.departure_time || null,
         is_reached: isReached,
         status: arrival?.status || 'PENDING',
         arrived_at: arrival?.arrived_at || null,
@@ -1667,7 +1669,7 @@ exports.trackBooking = async (req, res, next) => {
           longitude: originLng,
           address: originStop.address,
           landmark: originStop.landmark,
-          scheduled_time: originStop.pickup_time || trip.departure_time,
+          scheduled_time: rawStops.find((stop) => Number(stop.id) === Number(booking.origin_stop_id))?.pickup_time || trip.departure_time,
           is_reached: pickupIsReached,
           status: pickupArrival?.status || 'PENDING',
           arrived_at: pickupArrival?.arrived_at || null,
@@ -1680,7 +1682,10 @@ exports.trackBooking = async (req, res, next) => {
           longitude: destinationStop.longitude != null ? Number(destinationStop.longitude) : null,
           address: destinationStop.address,
           landmark: destinationStop.landmark,
+          scheduled_time: rawStops.find((stop) => Number(stop.id) === Number(booking.destination_stop_id))?.pickup_time || null,
         } : null,
+        scheduled_pickup_time: rawStops.find((stop) => Number(stop.id) === Number(booking.origin_stop_id))?.pickup_time || null,
+        scheduled_drop_time: rawStops.find((stop) => Number(stop.id) === Number(booking.destination_stop_id))?.pickup_time || null,
         timing_and_distance: {
           tracking_status: trackingStatus,
           tracking_message: trackingMessage,
