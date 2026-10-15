@@ -9,6 +9,7 @@ const BusStopSearchService = require('../services/busStopSearchService');
 const BusRouteSearchService = require('../services/busRouteSearchService');
 const SeatReservationService = require('../services/seatReservationService');
 const { confirmPaidBooking } = require('../services/bookingConfirmationService');
+const { getOrderedStopsForRoute } = require('../utils/routeStops');
 
 const buildPagination = (page, limit) => {
   const p = Math.max(1, parseInt(page) || 1);
@@ -1406,7 +1407,6 @@ exports.trackBooking = async (req, res, next) => {
               model: Route,
               as: 'route',
               required: false,
-              include: [{ model: Stop, as: 'stops', required: false }],
             },
             {
               model: Driver,
@@ -1518,8 +1518,7 @@ exports.trackBooking = async (req, res, next) => {
       arrivalsMap.set(Number(arr.stop_id), arr);
     });
 
-    const rawStops = (trip.route?.stops || []).map((s) => s.toJSON());
-    rawStops.sort((a, b) => (Number(a.stop_sequence) || 0) - (Number(b.stop_sequence) || 0));
+    const rawStops = trip.route_id ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time) : [];
 
     let reachedStopsCount = 0;
     const routeStoppages = rawStops.map((stop) => {

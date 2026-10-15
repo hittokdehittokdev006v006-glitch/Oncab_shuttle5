@@ -248,7 +248,14 @@ export const LocationPage: React.FC<{ onNotify: (message: string, type?: any) =>
       const response = await locationsAPI.dashboard();
       const next = response.data.data as LocationDashboardData;
       setData(next);
-      setSelectedBusId((current) => (current && next.buses.some((bus) => bus.id === current) ? current : null));
+      setSelectedBusId((current) => {
+        if (current && next.buses.some((bus) => bus.id === current)) return current;
+        if (!quiet) {
+          const firstLive = next.buses.find((bus) => bus.tracking_status === 'Live' && (bus.current_trip || bus.upcoming_trip));
+          if (firstLive) return firstLive.id;
+        }
+        return null;
+      });
     } catch (fetchError: any) {
       setError(fetchError.response?.data?.message || 'Unable to load live locations');
     } finally {
@@ -304,7 +311,10 @@ export const LocationPage: React.FC<{ onNotify: (message: string, type?: any) =>
   const selectedBus = filteredBuses.find((bus) => bus.id === selectedBusId) || null;
   const selectedTrip = selectedBus?.current_trip || selectedBus?.upcoming_trip || null;
   const selectedRoute = (data?.routes || []).find((route) => String(route.id) === routeFilter) || null;
-  const focusStops = selectedTrip?.route?.stops || selectedRoute?.stops || [];
+  const focusStops = useMemo(() => {
+    const list = (selectedTrip?.route?.stops || selectedRoute?.stops || []).slice();
+    return list.sort((a, b) => (Number(a.stop_sequence) || 0) - (Number(b.stop_sequence) || 0));
+  }, [selectedTrip, selectedRoute]);
   const focusKey = `${selectedBus?.id || ''}:${selectedTrip?.id || selectedRoute?.id || ''}`;
   const focusStopCoordinates = JSON.stringify(focusStops.map((stop) => [stop.latitude, stop.longitude]));
 
@@ -526,18 +536,24 @@ export const LocationPage: React.FC<{ onNotify: (message: string, type?: any) =>
                   Math.abs(Number(stop.latitude)) <= 90 &&
                   Math.abs(Number(stop.longitude)) <= 180
               )
-              .map((stop) => {
+              .map((stop, index) => {
                 const confirmedArr = (selectedBus?.confirmed_stop_arrivals || []).find((a) => Number(a.stop_id) === Number(stop.id));
                 const isReached = Boolean(confirmedArr && (confirmedArr.status === 'ARRIVED' || confirmedArr.status === 'COMPLETED'));
+                const displaySeq = Number(stop.stop_sequence) > 0 ? Number(stop.stop_sequence) : index + 1;
                 return (
                   <Marker
-                    key={`stop-${stop.id}`}
+                    key={`stop-${stop.id || index}`}
                     position={[Number(stop.latitude), Number(stop.longitude)]}
-                    icon={createStopIcon(stop.stop_sequence, isReached)}
+                    icon={createStopIcon(displaySeq, isReached)}
                   >
                     <Popup>
                       <div className="min-w-48 text-xs">
-                        <strong className="text-sm font-bold text-slate-900">Stop {stop.stop_sequence}: {stop.stop_name}</strong>
+                        <strong className="text-sm font-bold text-slate-900">Stop {displaySeq}: {stop.stop_name}</strong>
+                        {stop.pickup_time && (
+                          <div className="text-[11px] text-slate-600 mt-0.5">
+                            Scheduled: <strong>{formatTime(stop.pickup_time)}</strong>
+                          </div>
+                        )}
                         {confirmedArr ? (
                           <div className="mt-2 rounded bg-emerald-50 p-2 text-emerald-900 border border-emerald-200">
                             <div className="font-bold flex items-center gap-1 text-emerald-800">
@@ -940,7 +956,10 @@ export const LocationPage: React.FC<{ onNotify: (message: string, type?: any) =>
 };
 
 const TripDetail: React.FC<{ trip: Trip; bus: BusLocation; roadPathMessage: string }> = ({ trip, bus, roadPathMessage }) => {
-  const stops = trip.route?.stops || [];
+  const stops = useMemo(
+    () => (trip.route?.stops || []).slice().sort((a, b) => (Number(a.stop_sequence) || 0) - (Number(b.stop_sequence) || 0)),
+    [trip.route?.stops]
+  );
   const confirmedArrivals = bus.confirmed_stop_arrivals || [];
   const arrivalsMap = new Map<number, ConfirmedStopArrival>();
   confirmedArrivals.forEach((a) => arrivalsMap.set(Number(a.stop_id), a));
@@ -994,12 +1013,13 @@ const TripDetail: React.FC<{ trip: Trip; bus: BusLocation; roadPathMessage: stri
       </div>
 
       <div className="mt-2 max-h-56 space-y-1.5 overflow-y-auto pr-1">
-        {stops.map((stop) => {
+        {stops.map((stop, index) => {
           const arr = arrivalsMap.get(Number(stop.id));
           const isReached = Boolean(arr && (arr.status === 'ARRIVED' || arr.status === 'COMPLETED'));
+          const displaySeq = Number(stop.stop_sequence) > 0 ? Number(stop.stop_sequence) : index + 1;
           return (
             <div
-              key={stop.id}
+              key={stop.id || index}
               className={`flex items-start gap-2 p-1.5 rounded text-xs transition ${
                 isReached
                   ? 'bg-emerald-50/70 dark:bg-emerald-950/20 border border-emerald-200/60 dark:border-emerald-800/40'
@@ -1011,7 +1031,7 @@ const TripDetail: React.FC<{ trip: Trip; bus: BusLocation; roadPathMessage: stri
                   isReached ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
                 }`}
               >
-                {isReached ? '✓' : stop.stop_sequence}
+                {isReached ? '✓' : displaySeq}
               </span>
               <div className="min-w-0 flex-1">
                 <div className={`truncate ${isReached ? 'font-semibold text-emerald-950 dark:text-emerald-100' : 'text-slate-700 dark:text-slate-300'}`}>
@@ -1027,7 +1047,7 @@ const TripDetail: React.FC<{ trip: Trip; bus: BusLocation; roadPathMessage: stri
                     )}
                   </div>
                 ) : (
-                  <div className="text-[10px] text-slate-400">Scheduled: {stop.pickup_time || 'Pending'}</div>
+                  <div className="text-[10px] text-slate-400">Scheduled: {stop.pickup_time ? formatTime(stop.pickup_time) : 'Ahead'}</div>
                 )}
               </div>
               <span className="shrink-0 text-right">

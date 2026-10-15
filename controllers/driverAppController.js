@@ -2,9 +2,10 @@
 
 const jwt = require('jsonwebtoken');
 const { Op } = require('sequelize');
-const { Driver, DriverDetail, Trip, Route, Stop, Vehicle, Booking, Passenger, BusType, TripLocation, TripStopArrival } = require('../models');
+const { Driver, DriverDetail, Trip, Route, Stop, RouteStop, Vehicle, Booking, Passenger, BusType, TripLocation, TripStopArrival } = require('../models');
 const { saveOtp, verifyOtp: verifySmsOtp, sendFast2SMSOtp } = require('../services/smsService');
 const { releaseUnusedCouponOnTripCompletion } = require('../services/couponReleaseService');
+const { getOrderedStopsForRoute } = require('../utils/routeStops');
 
 // Helper to generate JWT Token for Driver
 const generateDriverToken = (driver) => {
@@ -323,7 +324,7 @@ exports.getTripDetails = async (req, res, next) => {
     const trip = await Trip.findOne({
       where: { id: req.params.id, driver_id: req.driver.id },
       include: [
-        { model: Route, as: 'route', include: [{ model: Stop, as: 'stops' }] },
+        { model: Route, as: 'route' },
         { model: Vehicle, as: 'vehicle', include: [{ model: BusType, as: 'bus_type' }] },
         {
           model: Booking,
@@ -340,10 +341,15 @@ exports.getTripDetails = async (req, res, next) => {
       return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found for this driver' });
     }
 
+    const tripData = trip.toJSON();
+    if (tripData.route) {
+      tripData.route.stops = await getOrderedStopsForRoute(tripData.route.id, tripData.departure_time);
+    }
+
     res.json({
       status: 200,
       success: true,
-      data: trip,
+      data: tripData,
     });
   } catch (err) {
     next(err);
@@ -1112,7 +1118,7 @@ exports.getDriverHome = async (req, res, next) => {
         status: { [Op.in]: ['Active', 'Scheduled'] },
       },
       include: [
-        { model: Route, as: 'route', include: [{ model: Stop, as: 'stops' }] },
+        { model: Route, as: 'route' },
         { model: Vehicle, as: 'vehicle', include: [{ model: BusType, as: 'bus_type' }] },
         { model: Booking, as: 'bookings', where: { booking_status: 'confirmed', payment_status: 'paid' }, required: false },
       ],
@@ -1139,7 +1145,7 @@ exports.getDriverHome = async (req, res, next) => {
     const boardedCount = bookings.filter((b) => b.boarding_status === 'boarded').length;
     const pendingCount = bookings.filter((b) => b.boarding_status === 'not_boarded').length;
 
-    const stops = activeTrip.route?.stops || [];
+    const stops = activeTrip.route_id ? await getOrderedStopsForRoute(activeTrip.route_id, activeTrip.departure_time) : [];
     const currentStop = stops.length > 0 ? stops[0] : null;
     const nextStop = stops.length > 1 ? stops[1] : null;
 
@@ -1194,7 +1200,7 @@ exports.getCurrentStop = async (req, res, next) => {
     const trip = await Trip.findOne({
       where: { id: req.params.id, driver_id: req.driver.id },
       include: [
-        { model: Route, as: 'route', include: [{ model: Stop, as: 'stops' }] },
+        { model: Route, as: 'route' },
         { model: Booking, as: 'bookings', where: { booking_status: 'confirmed', payment_status: 'paid' }, required: false },
       ],
     });
@@ -1203,7 +1209,7 @@ exports.getCurrentStop = async (req, res, next) => {
       return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found' });
     }
 
-    const stops = trip.route?.stops || [];
+    const stops = trip.route_id ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time) : [];
     const bookings = trip.bookings || [];
 
     // Identify current active stop by first stop with pending boardings
@@ -1258,7 +1264,6 @@ exports.getTripRouteMap = async (req, res, next) => {
         {
           model: Route,
           as: 'route',
-          include: [{ model: Stop, as: 'stops' }],
         },
         { model: Vehicle, as: 'vehicle', attributes: ['id', 'registration_number', 'company_model'] },
         { model: Driver, as: 'driver', attributes: ['id', 'name', 'mobile'] },
@@ -1286,8 +1291,7 @@ exports.getTripRouteMap = async (req, res, next) => {
       arrivalsMap.set(Number(arr.stop_id), arr);
     });
 
-    const rawStops = (trip.route?.stops || []).map((s) => s.toJSON());
-    rawStops.sort((a, b) => (a.stop_sequence || 0) - (b.stop_sequence || 0));
+    const rawStops = trip.route_id ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time) : [];
 
     let reachedCount = 0;
     const stops = rawStops.map((stop) => {
@@ -1439,12 +1443,16 @@ exports.arriveAtStop = async (req, res, next) => {
         notes: notes !== undefined ? notes : arrivalRecord.notes,
       });
     } else {
+      const routeStop = await RouteStop.findOne({
+        where: { route_id: trip.route_id, stop_id: stop.id },
+      });
+      const resolvedSequence = routeStop ? Number(routeStop.stop_sequence) : (Number(stop.stop_sequence) > 0 ? Number(stop.stop_sequence) : 1);
       arrivalRecord = await TripStopArrival.create({
         trip_id: trip.id,
         stop_id: stop.id,
         driver_id: req.driver.id,
         vehicle_id: trip.vehicle_id || null,
-        stop_sequence: stop.stop_sequence || 1,
+        stop_sequence: resolvedSequence,
         stop_name: stop.stop_name,
         scheduled_arrival_time: stop.pickup_time || trip.departure_time || null,
         arrived_at: now,
@@ -1629,12 +1637,16 @@ exports.completeStop = async (req, res, next) => {
       });
     } else {
       const stop = await Stop.findByPk(stopId);
+      const routeStop = await RouteStop.findOne({
+        where: { route_id: trip.route_id, stop_id: Number(stopId) },
+      });
+      const resolvedSequence = routeStop ? Number(routeStop.stop_sequence) : (Number(stop?.stop_sequence) > 0 ? Number(stop?.stop_sequence) : 1);
       arrivalRecord = await TripStopArrival.create({
         trip_id: trip.id,
         stop_id: Number(stopId),
         driver_id: req.driver.id,
         vehicle_id: trip.vehicle_id || null,
-        stop_sequence: stop?.stop_sequence || 1,
+        stop_sequence: resolvedSequence,
         stop_name: stop?.stop_name || 'Stop',
         scheduled_arrival_time: stop?.pickup_time || trip.departure_time || null,
         arrived_at: now,
@@ -1647,7 +1659,7 @@ exports.completeStop = async (req, res, next) => {
       });
     }
 
-    const stops = (trip.route?.stops || []).slice().sort((a, b) => (a.stop_sequence || 0) - (b.stop_sequence || 0));
+    const stops = trip.route_id ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time) : [];
     const currentIndex = stops.findIndex((s) => Number(s.id) === Number(stopId));
     const nextStop = currentIndex >= 0 && currentIndex + 1 < stops.length ? stops[currentIndex + 1] : null;
 
