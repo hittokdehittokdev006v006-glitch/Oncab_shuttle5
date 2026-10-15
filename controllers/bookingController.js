@@ -1,7 +1,7 @@
 'use strict';
 
 const { Op, fn, col } = require('sequelize');
-const { Booking, Trip, CustomerUser, Stop, RouteStop, Payment, Refund, Coupon, CouponUsage, Route, Vehicle, Driver, DriverDetail, BusType } = require('../models');
+const { Booking, Trip, CustomerUser, Stop, RouteStop, Payment, Refund, Coupon, CouponUsage, Route, Vehicle, Driver, DriverDetail, BusType, TripLocation, TripStopArrival } = require('../models');
 const { logAction } = require('../middleware/auditLog');
 const sequelize = require('../config/database');
 const { calculateCouponDiscount } = require('../utils/coupon');
@@ -9,6 +9,7 @@ const { resolveFare } = require('../utils/fareCalculator');
 const SeatReservationService = require('../services/seatReservationService');
 const { confirmPaidBooking } = require('../services/bookingConfirmationService');
 const { hasRole } = require('../utils/roles');
+const { getOrderedStopsForRoute } = require('../utils/routeStops');
 
 const calculateDistanceMeters = (lat1, lon1, lat2, lon2) => {
   if (lat1 == null || lon1 == null || lat2 == null || lon2 == null) return null;
@@ -58,7 +59,28 @@ const BOOKING_INCLUDE = [
       {
         model: Vehicle,
         as: 'vehicle',
-        attributes: ['id', 'registration_number', 'company_model', 'status', 'latitude', 'longitude'],
+        attributes: ['id', 'registration_number', 'company_model', 'status', 'latitude', 'longitude', 'total_seats', 'driver_id'],
+        required: false,
+        include: [
+          {
+            model: Driver,
+            as: 'driver',
+            attributes: ['id', 'name', 'mobile', 'online_status', 'photo'],
+            required: false,
+            include: [
+              {
+                model: DriverDetail,
+                as: 'details',
+                attributes: ['latitude', 'longitude', 'location_speed_kmh', 'location_heading', 'location_trip_id', 'updated_at'],
+                required: false,
+              },
+            ],
+          },
+        ],
+      },
+      {
+        model: TripStopArrival,
+        as: 'stop_arrivals',
         required: false,
       },
     ],
@@ -381,118 +403,185 @@ exports.updatePayment = async (req, res, next) => {
 // ── Track Booking Bus & Boarding Stop ──────────────────────────────
 exports.track = async (req, res, next) => {
   try {
-    const booking = await Booking.findByPk(req.params.id, { include: BOOKING_INCLUDE });
+    const booking = await Booking.findByPk(req.params.id, {
+      include: BOOKING_INCLUDE,
+    });
     if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
 
     const bookingData = booking.toJSON();
     const trip = bookingData.trip || {};
-    const driver = trip.driver || {};
-    const driverDetail = driver.details || {};
-    const vehicle = trip.vehicle || {};
-    // Use route_stops for ordered stops, fallback to legacy stops
-    const tripStops = await (async () => {
-      if (trip && trip.route_id) {
-        const routeStops = await RouteStop.findAll({
-          where: { route_id: trip.route_id },
-          include: [{ model: Stop, as: 'stop' }],
-          order: [['stop_sequence', 'ASC']],
-        });
-        if (routeStops && routeStops.length) {
-          return routeStops.map(rs => {
-            const s = rs.stop ? rs.stop.toJSON() : {};
-            return {
-              id: rs.stop_id,
-              stop_name: s.stop_name,
-              stop_code: s.stop_code,
-              latitude: s.latitude ? Number(s.latitude) : null,
-              longitude: s.longitude ? Number(s.longitude) : null,
-              address: s.address || null,
-              landmark: s.landmark || null,
-              stop_sequence: rs.stop_sequence,
-              travel_time_minutes: Number(rs.travel_time_minutes) || 0,
-            };
-          });
-        }
-      }
-      // Fallback to legacy stops if no route_stops
-      return (trip.route?.stops || [])
-        .slice()
-        .sort((a, b) => (Number(a.stop_sequence) || 0) - (Number(b.stop_sequence) || 0))
-        .map(stop => ({
-          id: stop.id,
-          stop_name: stop.stop_name,
-          stop_code: stop.stop_code,
-          latitude: stop.latitude == null ? null : Number(stop.latitude),
-          longitude: stop.longitude == null ? null : Number(stop.longitude),
-          address: stop.address || null,
-          landmark: stop.landmark || null,
-          stop_sequence: stop.stop_sequence,
-          travel_time_minutes: Number(stop.travel_time_minutes) || 0,
-        }));
-    })();
+    let driver = trip.driver || trip.vehicle?.driver || null;
+    let vehicle = trip.vehicle || null;
+
+    // Fallback: If driver is not resolved through associations, query directly
+    if (!driver && trip.driver_id) {
+      const d = await Driver.findByPk(trip.driver_id, {
+        attributes: ['id', 'name', 'mobile', 'online_status', 'photo'],
+        include: [{
+          model: DriverDetail,
+          as: 'details',
+          attributes: ['latitude', 'longitude', 'location_speed_kmh', 'location_heading', 'location_trip_id', 'updated_at'],
+        }],
+      });
+      if (d) driver = d.toJSON();
+    }
+    if (!driver && vehicle?.driver_id) {
+      const d = await Driver.findByPk(vehicle.driver_id, {
+        attributes: ['id', 'name', 'mobile', 'online_status', 'photo'],
+        include: [{
+          model: DriverDetail,
+          as: 'details',
+          attributes: ['latitude', 'longitude', 'location_speed_kmh', 'location_heading', 'location_trip_id', 'updated_at'],
+        }],
+      });
+      if (d) driver = d.toJSON();
+    }
+
+    // Fallback: If vehicle is not resolved through associations, query directly
+    if (!vehicle && trip.vehicle_id) {
+      const v = await Vehicle.findByPk(trip.vehicle_id, {
+        attributes: ['id', 'registration_number', 'company_model', 'status', 'latitude', 'longitude', 'total_seats'],
+      });
+      if (v) vehicle = v.toJSON();
+    }
+
+    // Fetch canonical ordered stops using RouteStop junction table
+    const tripStops = trip.route_id ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time) : [];
+
+    // Fetch confirmed stoppage arrivals for this trip
+    const stopArrivals = trip.id ? await TripStopArrival.findAll({
+      where: { trip_id: trip.id },
+      order: [['arrived_at', 'ASC']],
+    }) : [];
+
+    const arrivalsMap = new Map();
+    stopArrivals.forEach((arr) => {
+      arrivalsMap.set(Number(arr.stop_id), arr);
+    });
+
+    const processedStops = tripStops.map((stop) => {
+      const arr = arrivalsMap.get(Number(stop.id)) || null;
+      const isReached = Boolean(arr && (arr.status === 'ARRIVED' || arr.status === 'COMPLETED'));
+      return {
+        id: stop.id,
+        stop_id: stop.id,
+        stop_name: stop.stop_name,
+        stop_code: stop.stop_code || null,
+        stop_sequence: Number(stop.stop_sequence),
+        latitude: stop.latitude != null ? Number(stop.latitude) : null,
+        longitude: stop.longitude != null ? Number(stop.longitude) : null,
+        address: stop.address || null,
+        landmark: stop.landmark || null,
+        travel_time_minutes: Number(stop.travel_time_minutes) || 0,
+        pickup_time: stop.pickup_time || null,
+        scheduled_arrival_time: stop.pickup_time || trip.departure_time || null,
+        is_reached: isReached,
+        status: arr?.status || 'PENDING',
+        arrived_at: arr?.arrived_at || null,
+        completed_at: arr?.completed_at || null,
+        passengers_boarded: arr?.passengers_boarded || 0,
+        is_user_boarding_stop: Number(stop.id) === Number(bookingData.origin_stop_id),
+        is_user_destination_stop: Number(stop.id) === Number(bookingData.destination_stop_id),
+      };
+    });
 
     const originStop = bookingData.origin_stop || {};
     const destinationStop = bookingData.destination_stop || {};
 
-    const busLatRaw = driverDetail.latitude;
-    const busLngRaw = driverDetail.longitude;
-    const locationMatchesTrip = driverDetail.location_trip_id == null
-      || Number(driverDetail.location_trip_id) === Number(trip.id);
-    const hasBusLocation = locationMatchesTrip
-      && busLatRaw != null && busLngRaw != null
-      && Number.isFinite(Number(busLatRaw)) && Number.isFinite(Number(busLngRaw))
-      && Math.abs(Number(busLatRaw)) <= 90 && Math.abs(Number(busLngRaw)) <= 180;
+    const boardingStop = {
+      id: originStop.id || bookingData.origin_stop_id,
+      stop_name: originStop.stop_name || 'Pickup Stop',
+      stop_code: originStop.stop_code || null,
+      latitude: originStop.latitude != null && originStop.latitude !== '' ? Number(originStop.latitude) : null,
+      longitude: originStop.longitude != null && originStop.longitude !== '' ? Number(originStop.longitude) : null,
+      address: originStop.address || null,
+      landmark: originStop.landmark || null,
+    };
 
-    const busLocation = hasBusLocation
-      ? {
-          latitude: Number(busLatRaw),
-          longitude: Number(busLngRaw),
-          speed_kmh: driverDetail.location_speed_kmh != null ? Number(driverDetail.location_speed_kmh) : 0,
-          heading: driverDetail.location_heading != null ? Number(driverDetail.location_heading) : 0,
-          updated_at: driverDetail.updated_at || null,
-          driver_name: driver.name || 'Assigned Driver',
-          driver_mobile: driver.mobile || null,
-          vehicle_registration: vehicle.registration_number || null,
-          online_status: driver.online_status || 'offline',
-        }
-      : null;
+    const destinationLocation = {
+      id: destinationStop.id || bookingData.destination_stop_id,
+      stop_name: destinationStop.stop_name || 'Dropoff Stop',
+      stop_code: destinationStop.stop_code || null,
+      latitude: destinationStop.latitude != null && destinationStop.latitude !== '' ? Number(destinationStop.latitude) : null,
+      longitude: destinationStop.longitude != null && destinationStop.longitude !== '' ? Number(destinationStop.longitude) : null,
+      address: destinationStop.address || null,
+      landmark: destinationStop.landmark || null,
+    };
 
-    const originLatRaw = originStop.latitude;
-    const originLngRaw = originStop.longitude;
-    const hasOriginLocation = originLatRaw != null && originLngRaw != null && !isNaN(Number(originLatRaw)) && !isNaN(Number(originLngRaw));
+    // Resolve live bus GPS coordinates
+    const driverDetail = driver?.details || {};
+    let busLatRaw = driverDetail.latitude;
+    let busLngRaw = driverDetail.longitude;
+    let busSpeedRaw = driverDetail.location_speed_kmh;
+    let busHeadingRaw = driverDetail.location_heading;
+    let busUpdatedAt = driverDetail.updated_at;
 
-    const boardingStop = hasOriginLocation
-      ? {
-          id: originStop.id,
-          stop_name: originStop.stop_name,
-          stop_code: originStop.stop_code,
-          latitude: Number(originLatRaw),
-          longitude: Number(originLngRaw),
-          address: originStop.address || null,
-        }
-      : null;
+    // If driver coordinates belong to another trip or are empty, check latest TripLocation breadcrumb
+    if (trip.id && (busLatRaw == null || busLngRaw == null || (driverDetail.location_trip_id && Number(driverDetail.location_trip_id) !== Number(trip.id)))) {
+      const latestBreadcrumb = await TripLocation.findOne({
+        where: { trip_id: trip.id },
+        order: [['recorded_at', 'DESC'], ['id', 'DESC']],
+      });
+      if (latestBreadcrumb) {
+        busLatRaw = latestBreadcrumb.latitude;
+        busLngRaw = latestBreadcrumb.longitude;
+        busSpeedRaw = latestBreadcrumb.speed_kmh;
+        busHeadingRaw = latestBreadcrumb.heading;
+        busUpdatedAt = latestBreadcrumb.recorded_at;
+      }
+    }
 
-    const destLatRaw = destinationStop.latitude;
-    const destLngRaw = destinationStop.longitude;
-    const hasDestLocation = destLatRaw != null && destLngRaw != null && !isNaN(Number(destLatRaw)) && !isNaN(Number(destLngRaw));
+    // Fallback to vehicle coordinates if driver detail is missing
+    if (busLatRaw == null || busLngRaw == null) {
+      if (vehicle?.latitude != null && vehicle?.longitude != null) {
+        busLatRaw = vehicle.latitude;
+        busLngRaw = vehicle.longitude;
+        busSpeedRaw = 0;
+        busHeadingRaw = 0;
+        busUpdatedAt = vehicle.updated_at || null;
+      }
+    }
 
-    const destinationLocation = hasDestLocation
-      ? {
-          id: destinationStop.id,
-          stop_name: destinationStop.stop_name,
-          stop_code: destinationStop.stop_code,
-          latitude: Number(destLatRaw),
-          longitude: Number(destLngRaw),
-          address: destinationStop.address || null,
-        }
-      : null;
+    const parsedLat = busLatRaw != null && busLatRaw !== '' ? Number(busLatRaw) : null;
+    const parsedLng = busLngRaw != null && busLngRaw !== '' ? Number(busLngRaw) : null;
+    const hasBusLocation = parsedLat != null && parsedLng != null
+      && Number.isFinite(parsedLat) && Number.isFinite(parsedLng)
+      && Math.abs(parsedLat) <= 90 && Math.abs(parsedLng) <= 180;
 
+    const busLocation = {
+      latitude: hasBusLocation ? parsedLat : null,
+      longitude: hasBusLocation ? parsedLng : null,
+      speed_kmh: busSpeedRaw != null ? Number(busSpeedRaw) : 0,
+      heading: busHeadingRaw != null ? Number(busHeadingRaw) : null,
+      updated_at: busUpdatedAt || null,
+      driver_name: driver?.name || null,
+      driver_mobile: driver?.mobile || null,
+      vehicle_registration: vehicle?.registration_number || null,
+      online_status: driver?.online_status || null,
+      has_gps: Boolean(hasBusLocation),
+    };
+
+    // Calculate proximity & distance to passenger's pickup stoppage
     let distanceMeters = null;
     let distanceText = 'N/A';
     let trackingStatus = 'NO_GPS';
-    let trackingStatusMessage = 'Bus/Driver GPS location unavailable';
+    let trackingStatusMessage = 'Bus GPS ping unavailable';
 
-    if (busLocation && boardingStop) {
+    const pickupArr = arrivalsMap.get(Number(bookingData.origin_stop_id)) || null;
+
+    if (trip.status === 'Completed') {
+      trackingStatus = 'COMPLETED';
+      trackingStatusMessage = 'Trip has completed';
+    } else if (trip.status === 'Cancelled') {
+      trackingStatus = 'CANCELLED';
+      trackingStatusMessage = 'Trip has been cancelled';
+    } else if (pickupArr && pickupArr.status === 'COMPLETED') {
+      trackingStatus = 'DEPARTED_PICKUP';
+      trackingStatusMessage = `Bus has departed Pickup Stop (${boardingStop.stop_name})`;
+    } else if (pickupArr && pickupArr.status === 'ARRIVED') {
+      trackingStatus = 'ARRIVED';
+      trackingStatusMessage = `Bus is at Pickup Stop (${boardingStop.stop_name})`;
+    } else if (hasBusLocation && boardingStop.latitude != null && boardingStop.longitude != null) {
       distanceMeters = calculateDistanceMeters(
         busLocation.latitude,
         busLocation.longitude,
@@ -518,8 +607,10 @@ exports.track = async (req, res, next) => {
           trackingStatusMessage = `Bus is EN ROUTE (${distanceText} away from ${boardingStop.stop_name})`;
         }
       }
-    } else if (!boardingStop) {
-      trackingStatusMessage = 'Pickup stop coordinates not configured';
+    } else if (!hasBusLocation) {
+      trackingStatusMessage = trip.status === 'Active'
+        ? 'Bus trip is in progress. Waiting for driver GPS ping...'
+        : `Trip scheduled for ${trip.trip_date || booking.travel_date} at ${trip.departure_time || 'departure time'}`;
     }
 
     res.json({
@@ -529,9 +620,46 @@ exports.track = async (req, res, next) => {
         booking_reference: booking.booking_reference,
         passenger_name: booking.passenger_name,
         passenger_mobile: booking.passenger_mobile,
+        passenger_email: booking.passenger_email || booking.passenger?.email || null,
+        seat_numbers: booking.seat_numbers,
+        total_seats: booking.total_seats,
+        total_fare: booking.total_fare,
+        booking_status: booking.booking_status,
+        payment_status: booking.payment_status,
+        boarding_status: booking.boarding_status,
         travel_date: booking.travel_date,
+        created_at: booking.created_at,
+        trip: {
+          id: trip.id,
+          schedule_code: trip.schedule_code,
+          trip_date: trip.trip_date,
+          departure_time: trip.departure_time,
+          arrival_time: trip.arrival_time,
+          status: trip.status || 'Scheduled',
+        },
+        route: {
+          id: trip.route?.id,
+          route_name: trip.route?.route_name,
+          route_code: trip.route?.route_code,
+          origin_city: trip.route?.origin_city,
+          destination_city: trip.route?.destination_city,
+        },
+        driver: driver ? {
+          id: driver.id,
+          name: driver.name,
+          mobile: driver.mobile,
+          online_status: driver.online_status || null,
+          photo: driver.photo || null,
+        } : null,
+        vehicle: vehicle ? {
+          id: vehicle.id,
+          registration_number: vehicle.registration_number,
+          company_model: vehicle.company_model || null,
+          status: vehicle.status || null,
+          total_seats: vehicle.total_seats || null,
+        } : null,
         bus_location: busLocation,
-        trip_stops: tripStops,
+        trip_stops: processedStops,
         boarding_stop: boardingStop,
         destination_stop: destinationLocation,
         distance_meters: distanceMeters,
