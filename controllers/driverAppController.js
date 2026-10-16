@@ -237,6 +237,9 @@ exports.getAssignedTrips = async (req, res, next) => {
     const where = { driver_id: driverId };
     if (status) {
       where.status = status;
+      if (String(status).toLowerCase() === 'scheduled') {
+        where.trip_date = { [Op.gt]: new Date().toISOString().slice(0, 10) };
+      }
     }
     if (date) {
       where.trip_date = date;
