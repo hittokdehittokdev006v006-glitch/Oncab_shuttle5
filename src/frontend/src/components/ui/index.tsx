@@ -320,7 +320,8 @@ export const Select: React.FC<SelectProps> = ({ value, onChange, options, placeh
 
 // ── Modal ──────────────────────────────────────────────────
 interface ModalProps {
-  open: boolean;
+  open?: boolean;
+  isOpen?: boolean;
   onClose: () => void;
   title: string;
   children: React.ReactNode;
@@ -328,8 +329,9 @@ interface ModalProps {
   size?: 'sm' | 'md' | 'lg' | 'xl';
 }
 const MODAL_SIZES = { sm: 'max-w-md', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl' };
-export const Modal: React.FC<ModalProps> = ({ open, onClose, title, children, footer, size = 'md' }) => {
-  if (!open) return null;
+export const Modal: React.FC<ModalProps> = ({ open, isOpen, onClose, title, children, footer, size = 'md' }) => {
+  const isVisible = open ?? isOpen ?? false;
+  if (!isVisible) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" />

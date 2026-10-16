@@ -20,7 +20,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   hasPermission: (permission: string) => boolean;
-  hasRole: (role: string) => boolean;
+  hasRole: (roleOrUser: any, maybeRole?: string) => boolean;
   refreshUser: () => Promise<void>;
 }
 
@@ -75,7 +75,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return permissions.includes(`${permission.split('.')[0]}.manage`);
   }, [permissions, user]);
 
-  const checkRole = useCallback((role: string) => hasRole(user, role), [user]);
+  const checkRole = useCallback((roleOrUser: any, maybeRole?: string) => {
+    if (maybeRole !== undefined && typeof maybeRole === 'string') {
+      return hasRole(roleOrUser, maybeRole);
+    }
+    if (typeof roleOrUser === 'string') {
+      return hasRole(user, roleOrUser);
+    }
+    return false;
+  }, [user]);
 
   return (
     <AuthContext.Provider value={{ user, permissions, isLoading, isAuthenticated: !!user, login, logout, hasPermission, hasRole: checkRole, refreshUser }}>

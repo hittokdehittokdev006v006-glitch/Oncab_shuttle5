@@ -175,6 +175,28 @@ export const ownerApprovalAPI = {
     api.patch(`/owner-approval-requests/${id}/review`, { decision, admin_note }),
 };
 
+export const ownerKycAPI = {
+  getProfile: () => api.get('/owner-kyc/profile'),
+  submit: (data: object) => api.post('/owner-kyc', data),
+  getMine: () => api.get('/owner-kyc/mine'),
+  list: (params?: object) => api.get('/owner-kyc', { params }),
+  updateStatus: (id: number, data: { status: 'verified' | 'rejected'; admin_note?: string }) =>
+    api.patch(`/owner-kyc/${id}/status`, data),
+};
+
+export const settlementsAPI = {
+  list: (params?: object) => api.get('/owner-settlements', { params }),
+  getConfig: () => api.get('/owner-settlements/config'),
+  getTripRates: () => api.get('/owner-settlements/trip-rates'),
+  getPreviousWeekSummary: (params?: { owner_id?: number }) => api.get('/owner-settlements/previous-week-summary', { params }),
+  get: (id: number) => api.get(`/owner-settlements/${id}`),
+  create: (data: object) => api.post('/owner-settlements', data),
+  updateStatus: (id: number, data: { status: 'approved' | 'rejected' | 'pending'; utr_number?: string; admin_note?: string }) =>
+    api.patch(`/owner-settlements/${id}/status`, data),
+  delete: (id: number) => api.delete(`/owner-settlements/${id}`),
+};
+
+
 export const bookingsAPI = {
   list: (params?: object) => api.get('/bookings', { params }),
   show: (id: number) => api.get(`/bookings/${id}`),

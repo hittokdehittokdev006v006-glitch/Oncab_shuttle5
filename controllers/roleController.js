@@ -7,12 +7,28 @@ const { logAction } = require('../middleware/auditLog');
 // ── List Roles ─────────────────────────────────────────────
 exports.listRoles = async (req, res, next) => {
   try {
-    const roles = await Role.findAll({
-      where: { id: { [Op.ne]: 1 } },
-      include: [{ model: Permission, as: 'permissions' }],
-      order: [['name', 'ASC']],
+    const [roles, allPermissions] = await Promise.all([
+      Role.findAll({
+        include: [
+          { model: Permission, as: 'permissions' },
+          { model: AdminUser, as: 'admin_users', attributes: ['id'] },
+        ],
+        order: [['id', 'ASC']],
+      }),
+      Permission.findAll({ order: [['module', 'ASC'], ['id', 'ASC']] }),
+    ]);
+
+    const formatted = roles.map((role) => {
+      const r = role.toJSON();
+      const isAdmin = Number(r.id) === 1 || String(r.name || '').toLowerCase() === 'admin';
+      if (isAdmin && (!r.permissions || r.permissions.length < allPermissions.length)) {
+        r.permissions = allPermissions;
+      }
+      r.users_count = r.admin_users ? r.admin_users.length : 0;
+      return r;
     });
-    res.json({ success: true, data: roles });
+
+    res.json({ success: true, data: formatted });
   } catch (err) {
     next(err);
   }
@@ -45,7 +61,9 @@ exports.updateRole = async (req, res, next) => {
   try {
     const role = await Role.findByPk(req.params.id);
     if (!role) return res.status(404).json({ success: false, message: 'Role not found' });
-    if (Number(role.id) === 1) return res.status(403).json({ success: false, message: 'Admin role cannot be modified' });
+    if (Number(role.id) === 1 || String(role.name || '').toLowerCase() === 'admin') {
+      return res.status(403).json({ success: false, message: 'System Admin role cannot be modified' });
+    }
 
     const { display_name, description, is_active, permission_ids } = req.body;
     await role.update({ display_name, description, is_active });
@@ -66,7 +84,9 @@ exports.deleteRole = async (req, res, next) => {
   try {
     const role = await Role.findByPk(req.params.id);
     if (!role) return res.status(404).json({ success: false, message: 'Role not found' });
-    if (Number(role.id) === 1) return res.status(403).json({ success: false, message: 'Admin role cannot be deleted' });
+    if (Number(role.id) === 1 || String(role.name || '').toLowerCase() === 'admin') {
+      return res.status(403).json({ success: false, message: 'System Admin role cannot be deleted' });
+    }
 
     const usersCount = await AdminUser.count({ where: { role_id: role.id } });
     if (usersCount > 0) return res.status(409).json({ success: false, message: `Cannot delete role: ${usersCount} users assigned to it` });
@@ -83,12 +103,13 @@ exports.listPermissions = async (req, res, next) => {
   try {
     const { module } = req.query;
     const where = module ? { module } : {};
-    const permissions = await Permission.findAll({ where, order: [['module', 'ASC'], ['action', 'ASC']] });
+    const permissions = await Permission.findAll({ where, order: [['module', 'ASC'], ['id', 'ASC']] });
     
-    // Group by module
+    // Group by module with safe fallback
     const grouped = permissions.reduce((acc, p) => {
-      if (!acc[p.module]) acc[p.module] = [];
-      acc[p.module].push(p);
+      const mod = p.module || (p.name ? p.name.split('.')[0] : 'general');
+      if (!acc[mod]) acc[mod] = [];
+      acc[mod].push(p);
       return acc;
     }, {});
 
@@ -103,7 +124,9 @@ exports.assignPermissions = async (req, res, next) => {
   try {
     const role = await Role.findByPk(req.params.id);
     if (!role) return res.status(404).json({ success: false, message: 'Role not found' });
-    if (Number(role.id) === 1) return res.status(403).json({ success: false, message: 'Admin role permissions cannot be changed' });
+    if (Number(role.id) === 1 || String(role.name || '').toLowerCase() === 'admin') {
+      return res.status(403).json({ success: false, message: 'System Admin role inherently has all permissions and cannot be modified' });
+    }
 
     const { permission_ids } = req.body;
     const permissions = await Permission.findAll({ where: { id: permission_ids } });

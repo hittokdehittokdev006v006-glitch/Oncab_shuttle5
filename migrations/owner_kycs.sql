@@ -1,0 +1,27 @@
+-- Migration: Create owner_kycs table for Owner KYC and Bank Details
+CREATE TABLE IF NOT EXISTS `owner_kycs` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `owner_id` INT UNSIGNED NOT NULL,
+  `owner_name` VARCHAR(150) NOT NULL,
+  `owner_email` VARCHAR(150) NOT NULL,
+  `owner_mobile` VARCHAR(25) NOT NULL,
+  `vehicle_id` INT UNSIGNED DEFAULT NULL,
+  `vehicle_number` VARCHAR(35) DEFAULT NULL,
+  `aadhaar_number` VARCHAR(20) NOT NULL,
+  `pan_number` VARCHAR(20) NOT NULL,
+  `bank_name` VARCHAR(150) NOT NULL,
+  `account_holder_name` VARCHAR(150) NOT NULL,
+  `account_number` VARCHAR(50) NOT NULL,
+  `ifsc_code` VARCHAR(20) NOT NULL,
+  `upi_id` VARCHAR(100) DEFAULT NULL,
+  `status` ENUM('pending', 'verified', 'rejected') NOT NULL DEFAULT 'pending',
+  `admin_note` TEXT DEFAULT NULL,
+  `verified_by` INT UNSIGNED DEFAULT NULL,
+  `verified_at` DATETIME DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_owner_kycs_owner_id` (`owner_id`),
+  KEY `idx_owner_kycs_status` (`status`),
+  KEY `idx_owner_kycs_vehicle_id` (`vehicle_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
