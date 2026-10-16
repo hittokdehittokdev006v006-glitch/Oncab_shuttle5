@@ -651,7 +651,7 @@ exports.revenueReport = async (req, res, next) => {
     // 1. Fetch reference options: Owners, Bus Types, Routes
     const [owners, allBusTypes, allRoutes] = await Promise.all([
       AdminUser.findAll({
-        attributes: ['id', 'name', 'email', 'mobile'],
+        attributes: ['id', 'name'],
         include: [{ model: Role, as: 'role', attributes: [], where: { name: 'owner' }, required: true }],
         raw: true,
       }),
