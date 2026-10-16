@@ -1,7 +1,7 @@
 'use strict';
 
 const { Op, UniqueConstraintError } = require('sequelize');
-const { sequelize, Driver, BusType, Route, Stop, BusRoute, BusStop, BusSchedule, BusDriverAssignment } = require('../models');
+const { sequelize, Driver, BusType, Route, Stop, BusRoute, BusStop, BusSchedule, BusDriverAssignment ,Trip} = require('../models');
 const { getOrderedStopsForRoute } = require('../utils/routeStops');
 
 const assignmentIncludes = [
@@ -94,75 +94,355 @@ const scheduleCanRunOnDate = (schedule, date) => {
   return operatingDays.includes(weekday);
 };
 
+// exports.getAvailableSchedules = async (req, res, next) => {
+//   try {
+//     const eligibility = await getEligibleDriver(req.driver.id);
+//     if (respondForEligibility(res, eligibility)) return;
+
+//     const requestedDate = req.body?.assignment_date || req.query?.assignment_date;
+//     const date = requestedDate ? parseAssignmentDate(requestedDate) : null;
+//     if (requestedDate && (!date || date < new Date(`${todayDate()}T00:00:00.000Z`))) {
+//       return res.status(400).json({ status: 400, success: false, message: 'assignment_date must be a valid date today or later' });
+//     }
+
+//     const existingAssignments = await BusDriverAssignment.findAll({
+//       attributes: ['schedule_id'],
+//       where: {
+//         ...(requestedDate ? { assignment_date: requestedDate } : { assignment_date: { [Op.gte]: todayDate() } }),
+//         status: { [Op.ne]: 'cancelled' },
+//       },
+//     });
+//     const assignedScheduleIds = [...new Set(existingAssignments.map((item) => String(item.schedule_id)))];
+//     const requestedBusTypeId = req.body?.bus_type_id || req.query?.bus_type_id;
+
+//     const where = {
+//       status: { [Op.in]: ['Active', 'Scheduled'] },
+//     };
+
+//     if (requestedBusTypeId) {
+//       where.bus_type_id = requestedBusTypeId;
+//     }
+
+//     if (assignedScheduleIds.length) where.id = { [Op.notIn]: assignedScheduleIds };
+
+//     const schedules = await BusSchedule.findAll({
+//       where,
+//       include: [
+//         {
+//           model: Route,
+//           as: 'main_route',
+//           required: false,
+//           include: [{ model: Stop, as: 'stops', required: false }],
+//         },
+//         { model: BusType, as: 'bus_type', required: false },
+//       ],
+//       order: [['departure_time', 'ASC']],
+//     });
+
+//     let available = date ? schedules.filter((schedule) => scheduleCanRunOnDate(schedule, date)) : schedules;
+
+//     // Prioritize schedules matching driver's preferred_bus_type_id
+//     if (eligibility.driver.preferred_bus_type_id) {
+//       const preferredTypeId = String(eligibility.driver.preferred_bus_type_id);
+//       available.sort((a, b) => {
+//         const aMatch = String(a.bus_type_id) === preferredTypeId ? 0 : 1;
+//         const bMatch = String(b.bus_type_id) === preferredTypeId ? 0 : 1;
+//         return aMatch - bMatch;
+//       });
+//     }
+
+//     const data = await Promise.all(available.map(async (schedule) => {
+//       const item = formatScheduleRoute(schedule);
+//       return attachScheduleStops(item);
+//     }));
+
+//     res.json({
+//       status: 200,
+//       success: true,
+//       message: 'Available schedules retrieved successfully',
+//       data,
+//     });
+//   } catch (err) {
+//     next(err);
+//   }
+// };
+
+
+
+const scheduleSqlLogger = (sql, timing) => {
+  console.log('\n========== getAvailableSchedules | SQL ==========');
+  console.log('[getAvailableSchedules SQL]', sql);
+
+  if (timing !== undefined) {
+    console.log('[getAvailableSchedules SQL TIME]', `${timing} ms`);
+  }
+
+  console.log('=================================================\n');
+};
+
 exports.getAvailableSchedules = async (req, res, next) => {
   try {
+    console.log('\n========== getAvailableSchedules | START ==========');
+
+    console.log(
+      '[getAvailableSchedules] Driver ID:',
+      req.driver?.id
+    );
+
+    console.log(
+      '[getAvailableSchedules] Request body:',
+      req.body
+    );
+
+    console.log(
+      '[getAvailableSchedules] Request query:',
+      req.query
+    );
+
     const eligibility = await getEligibleDriver(req.driver.id);
+
     if (respondForEligibility(res, eligibility)) return;
 
-    const requestedDate = req.body?.assignment_date || req.query?.assignment_date;
-    const date = requestedDate ? parseAssignmentDate(requestedDate) : null;
-    if (requestedDate && (!date || date < new Date(`${todayDate()}T00:00:00.000Z`))) {
-      return res.status(400).json({ status: 400, success: false, message: 'assignment_date must be a valid date today or later' });
+    const requestedDate =
+      req.body?.assignment_date || req.query?.assignment_date;
+
+    const date = requestedDate
+      ? parseAssignmentDate(requestedDate)
+      : null;
+
+    if (
+      requestedDate &&
+      (!date || date < new Date(`${todayDate()}T00:00:00.000Z`))
+    ) {
+      return res.status(400).json({
+        status: 400,
+        success: false,
+        message: 'assignment_date must be a valid date today or later',
+      });
     }
+
+    const isDriver =
+      req.body?.is_driver === true ||
+      req.body?.is_driver === 'true';
+
+    const requestedBusTypeId =
+      req.body?.bus_type_id || req.query?.bus_type_id;
+
+    console.log(
+      '[getAvailableSchedules] Mode:',
+      isDriver ? 'DRIVER TRIPS' : 'AVAILABLE TRIPS'
+    );
+
+    console.log(
+      '[getAvailableSchedules] Requested date:',
+      requestedDate || 'Today and future'
+    );
+
+    console.log(
+      '[getAvailableSchedules] Bus type:',
+      requestedBusTypeId || 'All'
+    );
+
+    let trips = [];
+
+    // =====================================================
+    // DRIVER MODE: Fetch trips directly assigned to driver
+    // =====================================================
+    if (isDriver) {
+      const tripWhere = {
+        driver_id: req.driver.id,
+        status: { [Op.in]: ['Active', 'Scheduled'] },
+        ...(requestedDate
+          ? { trip_date: requestedDate }
+          : { trip_date: { [Op.gte]: todayDate() } }),
+      };
+
+      if (requestedBusTypeId) {
+        tripWhere.bus_type_id = requestedBusTypeId;
+      }
+
+      console.log(
+        '[getAvailableSchedules] Trip WHERE:',
+        tripWhere
+      );
+
+      trips = await Trip.findAll({
+        where: tripWhere,
+        logging: scheduleSqlLogger,
+        benchmark: true,
+        include: [
+          {
+            model: Route,
+            as: 'route',
+            required: false,
+            include: [
+              {
+                model: Stop,
+                as: 'stops',
+                required: false,
+              },
+            ],
+          },
+          {
+            model: BusType,
+            as: 'bus_type',
+            required: false,
+          },
+        ],
+        order: [['departure_time', 'ASC']],
+      });
+
+      console.log(
+        '[getAvailableSchedules] Driver trips fetched:',
+        trips.length
+      );
+
+      const data = await Promise.all(
+        trips.map(async (trip) => {
+          const item = formatScheduleRoute(trip);
+          return attachScheduleStops(item);
+        })
+      );
+
+      console.log(
+        '[getAvailableSchedules] Final driver trip count:',
+        data.length
+      );
+
+      console.log('========== getAvailableSchedules | END ==========\n');
+
+      return res.json({
+        status: 200,
+        success: true,
+        message: 'Driver trips retrieved successfully',
+        data,
+      });
+    }
+
+    // =====================================================
+    // NORMAL MODE: Exclude trips assigned on the date
+    // =====================================================
+    const assignmentWhere = {
+      ...(requestedDate
+        ? { assignment_date: requestedDate }
+        : { assignment_date: { [Op.gte]: todayDate() } }),
+      status: { [Op.ne]: 'cancelled' },
+    };
 
     const existingAssignments = await BusDriverAssignment.findAll({
       attributes: ['schedule_id'],
-      where: {
-        ...(requestedDate ? { assignment_date: requestedDate } : { assignment_date: { [Op.gte]: todayDate() } }),
-        status: { [Op.ne]: 'cancelled' },
-      },
+      where: assignmentWhere,
+      logging: scheduleSqlLogger,
+      benchmark: true,
     });
-    const assignedScheduleIds = [...new Set(existingAssignments.map((item) => String(item.schedule_id)))];
-    const requestedBusTypeId = req.body?.bus_type_id || req.query?.bus_type_id;
 
-    const where = {
+    console.log(
+      '[getAvailableSchedules] Existing assignments:',
+      existingAssignments.length
+    );
+
+    const assignedTripIds = [
+      ...new Set(
+        existingAssignments.map((assignment) =>
+          String(assignment.schedule_id)
+        )
+      ),
+    ];
+
+    const tripWhere = {
       status: { [Op.in]: ['Active', 'Scheduled'] },
+      ...(requestedDate
+        ? { trip_date: requestedDate }
+        : { trip_date: { [Op.gte]: todayDate() } }),
     };
 
     if (requestedBusTypeId) {
-      where.bus_type_id = requestedBusTypeId;
+      tripWhere.bus_type_id = requestedBusTypeId;
     }
 
-    if (assignedScheduleIds.length) where.id = { [Op.notIn]: assignedScheduleIds };
+    if (assignedTripIds.length) {
+      tripWhere.id = { [Op.notIn]: assignedTripIds };
+    }
 
-    const schedules = await BusSchedule.findAll({
-      where,
+    console.log(
+      '[getAvailableSchedules] Available trip WHERE:',
+      tripWhere
+    );
+
+    trips = await Trip.findAll({
+      where: tripWhere,
+      logging: scheduleSqlLogger,
+      benchmark: true,
       include: [
         {
           model: Route,
-          as: 'main_route',
+          as: 'route',
           required: false,
-          include: [{ model: Stop, as: 'stops', required: false }],
+          include: [
+            {
+              model: Stop,
+              as: 'stops',
+              required: false,
+            },
+          ],
         },
-        { model: BusType, as: 'bus_type', required: false },
+        {
+          model: BusType,
+          as: 'bus_type',
+          required: false,
+        },
       ],
       order: [['departure_time', 'ASC']],
     });
 
-    let available = date ? schedules.filter((schedule) => scheduleCanRunOnDate(schedule, date)) : schedules;
+    console.log(
+      '[getAvailableSchedules] Available trips fetched:',
+      trips.length
+    );
 
-    // Prioritize schedules matching driver's preferred_bus_type_id
+    // Prioritize driver's preferred bus type
     if (eligibility.driver.preferred_bus_type_id) {
-      const preferredTypeId = String(eligibility.driver.preferred_bus_type_id);
-      available.sort((a, b) => {
-        const aMatch = String(a.bus_type_id) === preferredTypeId ? 0 : 1;
-        const bMatch = String(b.bus_type_id) === preferredTypeId ? 0 : 1;
+      const preferredTypeId = String(
+        eligibility.driver.preferred_bus_type_id
+      );
+
+      trips.sort((a, b) => {
+        const aMatch =
+          String(a.bus_type_id) === preferredTypeId ? 0 : 1;
+
+        const bMatch =
+          String(b.bus_type_id) === preferredTypeId ? 0 : 1;
+
         return aMatch - bMatch;
       });
     }
 
-    const data = await Promise.all(available.map(async (schedule) => {
-      const item = formatScheduleRoute(schedule);
-      return attachScheduleStops(item);
-    }));
+    const data = await Promise.all(
+      trips.map(async (trip) => {
+        const item = formatScheduleRoute(trip);
+        return attachScheduleStops(item);
+      })
+    );
 
-    res.json({
+    console.log(
+      '[getAvailableSchedules] Final available trip count:',
+      data.length
+    );
+
+    console.log('========== getAvailableSchedules | END ==========\n');
+
+    return res.json({
       status: 200,
       success: true,
-      message: 'Available schedules retrieved successfully',
+      message: 'Available trips retrieved successfully',
       data,
     });
   } catch (err) {
+    console.error(
+      '[getAvailableSchedules] ERROR:',
+      err.stack || err
+    );
+
     next(err);
   }
 };
