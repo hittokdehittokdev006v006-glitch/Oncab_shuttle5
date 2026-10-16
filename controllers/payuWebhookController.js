@@ -3,6 +3,7 @@
 const { Payment, Refund, Booking, PayuWebhook, sequelize } = require('../models');
 const { getPayUConfig, responseHash, secureCompare } = require('../utils/payu');
 const refundController = require('./refundController');
+const { confirmPaidBooking } = require('../services/bookingConfirmationService');
 
 const normalizeAmount = (amount) => {
   const n = Number(amount);
@@ -111,13 +112,14 @@ exports.receive = async (req, res, next) => {
           gateway_response: body,
           event: 'payment_captured_webhook',
         }, { transaction: tx });
-        const booking = await Booking.findByPk(payment.booking_id, { transaction: tx });
-        if (booking && booking.payment_status !== 'paid') {
+        const booking = await Booking.findByPk(payment.booking_id, { transaction: tx, lock: tx.LOCK.UPDATE });
+        if (booking && booking.booking_status !== 'cancelled') {
           await booking.update({
             payment_status: 'paid',
             transaction_id: txnid || booking.transaction_id,
             payu_mihpayid: mihpayid || booking.payu_mihpayid,
           }, { transaction: tx });
+          await confirmPaidBooking({ booking, transaction: tx });
         }
       } else if (lower(body.status) === 'failed' && payment.status === 'pending') {
         await payment.update({ status: 'failed', gateway_response: body, event: 'payment_failed_webhook' }, { transaction: tx });

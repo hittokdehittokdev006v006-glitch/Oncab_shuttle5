@@ -121,6 +121,18 @@ exports.callback = async (req, res, next) => {
     }
 
     if (payment.status === 'captured') {
+      const booking = await Booking.findByPk(payment.booking_id, { transaction, lock: transaction.LOCK.UPDATE });
+      if (booking && booking.booking_status !== 'cancelled') {
+        if (booking.payment_status !== 'paid') {
+          await booking.update({
+            payment_status: 'paid',
+            payment_method: 'payu',
+            transaction_id: txnid,
+            payu_mihpayid: payment.payu_mihpayid || booking.payu_mihpayid || null,
+          }, { transaction });
+        }
+        await confirmPaidBooking({ booking, transaction });
+      }
       const pendingRefund = await Refund.findOne({
         where: { payment_id: payment.id, status: ['pending', 'processing'] },
         transaction,
