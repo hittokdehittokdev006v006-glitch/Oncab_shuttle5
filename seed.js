@@ -58,6 +58,8 @@ const seedDatabase = async () => {
       { name: 'refunds.read', display_name: 'View Refunds', module: 'refunds', action: 'read' },
       { name: 'refunds.process', display_name: 'Process Refunds', module: 'refunds', action: 'manage' },
 
+      { name: 'webhooks.read', display_name: 'View PayU Webhooks', module: 'webhooks', action: 'read' },
+
       { name: 'reports.read', display_name: 'View Reports', module: 'reports', action: 'read' },
       { name: 'audit_logs.read', display_name: 'View Audit Logs', module: 'audit_logs', action: 'read' },
       { name: 'notifications.read', display_name: 'View Notifications', module: 'notifications', action: 'read' },
@@ -229,6 +231,7 @@ const seedDatabase = async () => {
       { key: 'allow_cancellation_hours', value: '2', group: 'booking' },
       { key: 'max_advance_booking_days', value: '30', group: 'booking' },
       { key: 'payment_gateway', value: 'payu', group: 'payment' },
+      { key: 'refund_admin_approval_required', value: 'true', group: 'refund' },
       { key: 'sms_gateway_enabled', value: 'true', group: 'notifications' },
       { key: 'email_alerts_enabled', value: 'true', group: 'notifications' },
     ];

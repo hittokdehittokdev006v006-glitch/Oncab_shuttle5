@@ -36,6 +36,7 @@ const OwnerApprovalRequest = require('./OwnerApprovalRequest');
 const Banner = require('./Banner');
 const TripLocation = require('./TripLocation');
 const TripStopArrival = require('./TripStopArrival');
+const PayuWebhook = require('./PayuWebhook');
 
 // ─── Role & Permission Associations ─────────────────────
 Role.belongsToMany(Permission, {
@@ -226,4 +227,5 @@ module.exports = {
   Banner,
   TripLocation,
   TripStopArrival,
+  PayuWebhook,
 };

@@ -6,8 +6,7 @@ const getPayUConfig = () => {
   const key = process.env.PAYU_KEY;
   const salt = process.env.PAYU_SALT; 
   console.log(key,salt);
-  
-  if (!key || !salt) throw new Error('PayU is not configured. Set PAYU_KEY and PAYU_SALT.');
+    if (!key || !salt) throw new Error('PayU is not configured. Set PAYU_KEY and PAYU_SALT.');
   return {
     key,
     salt,
@@ -64,17 +63,55 @@ const postPayUCommand = async (command, var1, extra = {}) => {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: params,
   });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.msg || result.message || 'PayU API request failed');
+  const rawText = await response.text();
+  let result;
+  try {
+    result = JSON.parse(rawText);
+  } catch {
+    throw new Error(`PayU API returned a non-JSON response (HTTP ${response.status}): ${rawText.slice(0, 300)}`);
+  }
+  if (!response.ok) throw new Error(result.msg || result.message || `PayU API request failed (HTTP ${response.status})`);
   return result;
 };
 
-const initiateRefund = ({ mihpayid, amount, refundToken }) => postPayUCommand(
-  'cancel_refund_transaction',
-  mihpayid,
-  { var2: Number(amount).toFixed(2), var3: refundToken }
-);
+const initiateRefund = async ({ mihpayid, amount, refundToken }) => {
+  if (!mihpayid) throw new Error('PayU mihpayid is required to initiate a refund');
+  const refundAmount = Number(amount);
+  if (!Number.isFinite(refundAmount) || refundAmount <= 0) throw new Error('Refund amount must be greater than zero');
 
-const checkRefundStatus = (requestId) => postPayUCommand('check_action_status', requestId);
+  const result = await postPayUCommand(
+    'cancel_refund_transaction',
+    mihpayid,
+    {
+      var2: refundAmount.toFixed(2),
+      var3: refundToken || '',
+      var4: '',
+      var5: '',
+    }
+  );
+
+  const accepted = result && (Number(result.status) === 1 || String(result.action_status || '').toLowerCase() === 'success');
+  if (!accepted) {
+    const err = new Error(result?.msg || result?.message || 'PayU refund request was rejected');
+    err.payuResponse = result;
+    throw err;
+  }
+  return result;
+};
+
+const checkRefundStatus = async (requestId) => {
+  const result = await postPayUCommand('check_action_status', requestId);
+  const details = result?.transaction_details && Object.values(result.transaction_details)[0];
+  return {
+    ...result,
+    normalized_status: String(
+      details?.status ||
+      details?.action_status ||
+      result?.action_status ||
+      result?.status ||
+      ''
+    ).toLowerCase(),
+  };
+};
 
 module.exports = { getPayUConfig, sha512, paymentHash, responseHash, secureCompare, initiateRefund, checkRefundStatus };

@@ -23,6 +23,7 @@ const Booking = sequelize.define('Booking', {
   payment_status: { type: DataTypes.ENUM('pending', 'paid', 'failed', 'refunded', 'partial_refund'), defaultValue: 'pending' },
   payment_method: { type: DataTypes.STRING(50), defaultValue: null },
   transaction_id: { type: DataTypes.STRING(100), defaultValue: null },
+  payu_mihpayid: { type: DataTypes.STRING(100), defaultValue: null },
   booking_status: { type: DataTypes.ENUM('confirmed', 'cancelled', 'completed', 'pending'), defaultValue: 'pending' },
   boarding_pass_code: { type: DataTypes.STRING(20), defaultValue: null },
   boarding_pin: { type: DataTypes.STRING(10), defaultValue: null },

@@ -16,11 +16,94 @@ const REFUND_INCLUDE = [
   { model: Payment, as: 'payment', attributes: ['id', 'payment_gateway', 'payu_txnid', 'payu_mihpayid', 'amount', 'status'] },
 ];
 
+// Refund list attributes include the real PayU ids
+const REFUND_ATTRS = ['id', 'booking_id', 'passenger_id', 'refund_reference', 'refund_amount', 'refund_method', 'refund_reason', 'status', 'gateway_refund_id', 'payu_txnid', 'payu_mihpayid', 'failure_reason', 'processed_at', 'created_at'];
+
 const getPayURefundMode = async () => {
   const setting = await SystemSetting.findOne({ where: { key: 'payu_refund_mode' } });
   const mode = String(setting?.value || 'standard').toLowerCase();
   return ['instant', 'standard'].includes(mode) ? mode : 'standard';
 };
+
+// Admin approval setting for refunds. When disabled, a PayU (bank) refund is
+// initiated immediately when the user cancels — no admin approval needed.
+// When enabled (default), it waits for an admin to process it.
+const isRefundAdminApprovalRequired = async () => {
+  const setting = await SystemSetting.findOne({ where: { key: 'refund_admin_approval_required' } });
+  if (!setting) return true;
+  return String(setting.value).trim().toLowerCase() === 'true';
+};
+
+// Shared helper: call PayU and record the result on the refund.
+// NOTE: call OUTSIDE a DB transaction - it performs a network call to PayU.
+const runPayURefund = async ({ refund, payment, booking, notes }) => {
+  const refundAmount = Number(refund.refund_amount);
+  try {
+    const refundResult = await initiateRefund({
+      mihpayid: payment.payu_mihpayid,
+      amount: refundAmount,
+      refundToken: refund.refund_reference,
+    });
+
+    const statusValue = String(
+      refundResult?.action_status || refundResult?.msg || refundResult?.status || ''
+    ).toLowerCase();
+    // status:1 means PayU accepted the request -> 'processing' until the
+    // webhook / check_action_status confirms the money actually moved.
+    const accepted = Number(refundResult?.status) === 1 ||
+      ['success', 'queued', 'refund request queued'].includes(statusValue);
+    const refundStatus = accepted ? 'processing' : 'failed';
+
+    await refund.update({
+      payment_id: payment.id,
+      status: refundStatus,
+      refund_method: 'payu',
+      gateway_refund_id: refundResult?.request_id || refund.gateway_refund_id || null,
+      payu_txnid: payment.payu_txnid || refund.payu_txnid || null,
+      payu_mihpayid: payment.payu_mihpayid || refund.payu_mihpayid || null,
+      gateway_response: refundResult,
+      notes: notes || refund.notes,
+      failure_reason: refundStatus === 'failed' ? (refundResult?.msg || 'PayU rejected the refund request') : null,
+      processed_at: null,
+    });
+
+    if (booking && refundStatus === 'failed') {
+      await refund.update({ status: 'failed', failure_reason: refundResult?.msg || 'PayU refund failed' });
+    }
+    return { refund, refundStatus, payuResult: refundResult };
+  } catch (payuErr) {
+    await refund.update({
+      payment_id: payment.id,
+      status: 'failed',
+      refund_method: 'payu',
+      payu_txnid: payment.payu_txnid || refund.payu_txnid || null,
+      payu_mihpayid: payment.payu_mihpayid || refund.payu_mihpayid || null,
+      failure_reason: payuErr?.message || 'PayU refund initiation failed',
+    });
+    return { refund, refundStatus: 'failed', error: payuErr };
+  }
+};
+
+// After a refund is confirmed completed, sync payment & booking statuses.
+const applyRefundCompletion = async ({ refund }) => {
+  const payment = refund.payment || (refund.payment_id ? await Payment.findByPk(refund.payment_id) : null);
+  if (!payment) return;
+  const refundedAmount = await Refund.sum('refund_amount', { where: { payment_id: payment.id, status: 'completed' } });
+  const isFullRefund = Number(refundedAmount || 0) >= Number(payment.amount);
+  await payment.update({ status: isFullRefund ? 'refunded' : 'partial_refund' });
+  if (refund.booking_id) {
+    const booking = await Booking.findByPk(refund.booking_id);
+    if (booking) {
+      const bookingRefundedAmount = await Refund.sum('refund_amount', { where: { booking_id: booking.id, status: 'completed' } });
+      const isBookingFullyRefunded = Number(bookingRefundedAmount || 0) >= Number(booking.final_amount);
+      await booking.update({ payment_status: isBookingFullyRefunded ? 'refunded' : 'partial_refund' });
+    }
+  }
+};
+
+exports.isRefundAdminApprovalRequired = isRefundAdminApprovalRequired;
+exports.runPayURefund = runPayURefund;
+exports.applyRefundCompletion = applyRefundCompletion;
 
 // ── List All Refunds ───────────────────────────────────────
 exports.list = async (req, res, next) => {
@@ -62,11 +145,14 @@ exports.completedList = async (req, res, next) => {
   }
 };
 
-// ── Process Refund ─────────────────────────────────────────
+// ── Process Refund (admin approval / retry from panel) ──────
 exports.process = async (req, res, next) => {
   const transaction = await sequelize.transaction();
+  let refund;
+  let payment;
+  let booking;
   try {
-    const refund = await Refund.findByPk(req.params.id, {
+    refund = await Refund.findByPk(req.params.id, {
       transaction,
       lock: transaction.LOCK.UPDATE,
     });
@@ -83,8 +169,8 @@ exports.process = async (req, res, next) => {
       return res.status(409).json({ success: false, message: 'Refund is already processing' });
     }
 
-    const booking = await Booking.findByPk(refund.booking_id, { transaction });
-    const payment = refund.payment_id
+    booking = await Booking.findByPk(refund.booking_id, { transaction });
+    payment = refund.payment_id
       ? await Payment.findByPk(refund.payment_id, { transaction, lock: transaction.LOCK.UPDATE })
       : await Payment.findOne({
         where: { booking_id: refund.booking_id, status: { [Op.in]: ['captured', 'partial_refund'] } },
@@ -98,72 +184,48 @@ exports.process = async (req, res, next) => {
       await transaction.rollback();
       return res.status(400).json({ success: false, message: 'Refund amount must be greater than zero' });
     }
-
-    const payuMode = await getPayURefundMode();
     if (!payment || !payment.payu_mihpayid || payment.amount == null || Number(payment.amount) <= 0) {
       await transaction.rollback();
       return res.status(409).json({
         success: false,
-        message: 'A valid PayU payment transaction is required to process this refund.',
+        message: 'A valid PayU payment transaction (mihpayid) is required to process this refund.',
       });
     }
 
-    try {
-      const refundResult = await initiateRefund({
-        mihpayid: payment.payu_mihpayid,
-        amount: refundAmount,
-        refundToken: refund.refund_reference,
-      });
-      const statusValue = String(refundResult?.status || refundResult?.action_status || '').toLowerCase();
-      const refundStatus = ['success', 'successful', 'completed'].includes(statusValue) ? 'completed' : 'processing';
-      await refund.update({
-        payment_id: payment.id,
-        status: refundStatus,
-        refund_method: 'payu',
-        gateway_refund_id: refundResult?.request_id || refund.gateway_refund_id || null,
-        gateway_response: refundResult,
-        notes: req.body?.notes || refund.notes,
-        failure_reason: null,
-        processed_at: refundStatus === 'completed' ? new Date() : null,
-      }, { transaction });
-
-      if (refundStatus === 'completed') {
-        const refundedAmount = await Refund.sum('refund_amount', { where: { payment_id: payment.id, status: 'completed' }, transaction });
-        const isFullRefund = Number(refundedAmount || 0) >= Number(payment.amount);
-        await payment.update({ status: isFullRefund ? 'refunded' : 'partial_refund' }, { transaction });
-        if (booking) {
-          const bookingRefundedAmount = await Refund.sum('refund_amount', { where: { booking_id: booking.id, status: 'completed' }, transaction });
-          const isBookingFullyRefunded = Number(bookingRefundedAmount || 0) >= Number(booking.final_amount);
-          await booking.update({ payment_status: isBookingFullyRefunded ? 'refunded' : 'partial_refund' }, { transaction });
-        }
-      }
-
-      await transaction.commit();
-      const processedRefund = await Refund.findByPk(refund.id, { include: REFUND_INCLUDE });
-      return res.json({
-        success: true,
-        message: refundStatus === 'completed'
-          ? `PayU refund completed using ${payuMode} mode`
-          : `PayU refund submitted using ${payuMode} mode; awaiting PayU confirmation`,
-        data: processedRefund,
-      });
-    } catch (payuErr) {
-      await refund.update({
-        payment_id: payment.id,
-        status: 'failed',
-        refund_method: 'payu',
-        failure_reason: payuErr?.message || 'PayU refund initiation failed',
-      }, { transaction });
-      await transaction.commit();
-      return res.status(502).json({
-        success: false,
-        message: payuErr?.message || 'PayU refund initiation failed.',
-      });
-    }
+    // Mark as processing & commit BEFORE the network call so concurrent
+    // clicks cannot double-refund, and we never hold a DB tx open over HTTP.
+    await refund.update({ status: 'processing', payment_id: payment.id }, { transaction });
+    await transaction.commit();
   } catch (err) {
     if (!transaction.finished) await transaction.rollback();
-    next(err);
+    return next(err);
   }
+
+  const payuMode = await getPayURefundMode();
+  const { refund: updatedRefund, refundStatus, error } = await runPayURefund({
+    refund,
+    payment,
+    booking,
+    notes: req.body?.notes,
+  });
+
+  if (refundStatus === 'completed') await applyRefundCompletion({ refund: updatedRefund });
+
+  const processedRefund = await Refund.findByPk(updatedRefund.id, { include: REFUND_INCLUDE });
+  if (refundStatus === 'failed') {
+    return res.status(502).json({
+      success: false,
+      message: error?.message || 'PayU refund initiation failed.',
+      data: processedRefund,
+    });
+  }
+  return res.json({
+    success: true,
+    message: refundStatus === 'completed'
+      ? `PayU refund completed using ${payuMode} mode`
+      : `PayU refund accepted by PayU using ${payuMode} mode; awaiting PayU confirmation (webhook / status check)`,
+    data: processedRefund,
+  });
 };
 
 exports.getUserRefunds = async (req, res, next) => {
@@ -209,11 +271,13 @@ exports.verifyPayU = async (req, res, next) => {
 
     const result = await checkRefundStatus(refund.gateway_refund_id);
     const details = result.transaction_details && Object.values(result.transaction_details)[0];
-    const actionStatus = String(details?.status || details?.action_status || '').toLowerCase();
+    const actionStatus = String(
+      details?.status || details?.action_status || result?.normalized_status || result?.action_status || ''
+    ).toLowerCase();
     let status = refund.status;
     const updates = { gateway_response: result };
 
-    if (['success', 'successful', 'completed'].includes(actionStatus)) {
+    if (['success', 'successful', 'completed', 'done', 'refunded'].includes(actionStatus)) {
       status = 'completed';
       updates.status = status;
       updates.processed_at = new Date();
@@ -226,14 +290,7 @@ exports.verifyPayU = async (req, res, next) => {
 
     await refund.update(updates);
     if (status === 'completed') {
-      const payment = refund.payment || await Payment.findByPk(refund.payment_id);
-      if (payment) {
-        const booking = await Booking.findByPk(refund.booking_id);
-        const refundedAmount = await Refund.sum('refund_amount', { where: { payment_id: payment.id, status: 'completed' } });
-        const isFullRefund = Number(refundedAmount || 0) >= Number(payment.amount);
-        await payment.update({ status: isFullRefund ? 'refunded' : 'partial_refund' });
-        if (booking) await booking.update({ payment_status: isFullRefund ? 'refunded' : 'partial_refund' });
-      }
+      await applyRefundCompletion({ refund });
     }
 
     res.json({ success: true, message: `PayU refund status: ${status}`, data: refund });
