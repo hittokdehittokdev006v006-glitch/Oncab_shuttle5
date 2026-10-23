@@ -166,6 +166,10 @@ const ensureTripInstancesForRange = async (startStr, endStr) => {
     const masterSchedules = await Trip.findAll({
       where: {
         status: { [Op.notIn]: ['Cancelled', 'Completed', 'Inactive'] },
+        [Op.or]: [
+          { notes: null },
+          { notes: { [Op.notLike]: 'Generated%' } },
+        ],
       },
     });
 
@@ -190,6 +194,7 @@ const ensureTripInstancesForRange = async (startStr, endStr) => {
         }
 
         const existing = await Trip.findOne({
+          paranoid: false,
           where: {
             [Op.or]: [
               { schedule_code: master.schedule_code, trip_date: dateStr },
@@ -233,12 +238,8 @@ exports.list = async (req, res, next) => {
     if (from_date) from_date = normalizeDateStr(from_date);
     if (to_date) to_date = normalizeDateStr(to_date);
 
-    const targetFrom = from_date || trip_date || new Date().toISOString().split('T')[0];
-    const targetTo = to_date || trip_date || targetFrom;
-
-    if (targetFrom && targetTo && !isOwnerRole(req)) {
-      await ensureTripInstancesForRange(targetFrom, targetTo);
-    }
+    // Note: Do not auto-generate trips on list/GET queries to ensure deleted trips remain deleted.
+    // Trip instances should only be generated explicitly via exports.generateFutureTrips.
 
     const { offset, limit: lim, page: p } = buildPagination(page, limit);
     const where = {};
@@ -987,6 +988,10 @@ exports.generateFutureTrips = async (req, res, next) => {
 
     const scheduleWhere = {
       status: { [Op.notIn]: ['Cancelled', 'Completed', 'Inactive'] },
+      [Op.or]: [
+        { notes: null },
+        { notes: { [Op.notLike]: 'Generated%' } },
+      ],
     };
     if (Array.isArray(schedule_ids) && schedule_ids.length > 0) {
       scheduleWhere.id = schedule_ids;
@@ -1026,6 +1031,7 @@ exports.generateFutureTrips = async (req, res, next) => {
         }
 
         const existing = await Trip.findOne({
+          paranoid: false,
           where: {
             [Op.or]: [
               { schedule_code: master.schedule_code, trip_date: dateStr },
