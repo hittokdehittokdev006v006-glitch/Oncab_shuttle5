@@ -374,6 +374,18 @@ const BannersPage = React.lazy(() =>
   }))
 );
 
+const RidePackagesPage = React.lazy(() =>
+  import('./pages/RidePackagesPage').then(m => ({
+    default: m.RidePackagesPage
+  }))
+);
+
+const PackagePurchasesPage = React.lazy(() =>
+  import('./pages/PackagePurchasesPage').then(m => ({
+    default: m.PackagePurchasesPage
+  }))
+);
+
 const PageWrapper = ({ children }: { children: React.ReactNode }) => (
   <React.Suspense fallback={<LoadingState />}>
     {children}
@@ -447,7 +459,9 @@ const VALID_VIEWS: View[] = [
   'payu-webhooks',
   'settings',
   'owner-kyc',
-  'owner-settlements'
+  'owner-settlements',
+  'packages',
+  'package-purchases'
 ];
 
 const VIEW_PERMISSIONS: Partial<Record<View, string>> = {
@@ -467,6 +481,8 @@ const VIEW_PERMISSIONS: Partial<Record<View, string>> = {
   'owner-kyc': 'owner_kyc.read',
   'owner-settlements': 'settlements.read',
   settings: 'settings.manage',
+  packages: 'packages.read',
+  'package-purchases': 'packages.read',
 };
 
 // ── Get View From Current URL ──────────────────────────────
@@ -533,6 +549,7 @@ const AppInner: React.FC = () => {
     if (hasPermission(permission)) return true;
     if (view === 'stops' && hasPermission('routes.read')) return true;
     if (view === 'payu-webhooks' && hasPermission('refunds.read')) return true;
+    if (view === 'packages' && (hasPermission('packages.read') || hasRole('admin'))) return true;
     return false;
   };
 
@@ -901,6 +918,20 @@ const AppInner: React.FC = () => {
         return (
           <PageWrapper>
             <SettingsPage {...props} />
+          </PageWrapper>
+        );
+
+      case 'packages':
+        return (
+          <PageWrapper>
+            <RidePackagesPage {...props} />
+          </PageWrapper>
+        );
+
+      case 'package-purchases':
+        return (
+          <PageWrapper>
+            <PackagePurchasesPage {...props} />
           </PageWrapper>
         );
 

@@ -223,6 +223,188 @@ const ensureOwnerSettlementsTable = async () => {
   }
 };
 
+const ensureRidePackagesTable = async () => {
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS \`ride_packages\` (
+        \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        \`package_code\` VARCHAR(50) NOT NULL,
+        \`name\` VARCHAR(100) NOT NULL,
+        \`package_type\` ENUM('single_trip', 'fixed_bundle', 'daily', 'weekly', 'monthly', 'quarterly', 'annual') NOT NULL DEFAULT 'fixed_bundle',
+        \`rides_count\` INT UNSIGNED NOT NULL DEFAULT 10,
+        \`validity_days\` INT UNSIGNED NOT NULL DEFAULT 30,
+        \`price_per_ride\` DECIMAL(10, 2) NOT NULL,
+        \`total_price\` DECIMAL(10, 2) NOT NULL,
+        \`original_price\` DECIMAL(10, 2) DEFAULT NULL,
+        \`discount_percentage\` DECIMAL(5, 2) DEFAULT 0.00,
+        \`route_id\` BIGINT UNSIGNED DEFAULT NULL,
+        \`description\` TEXT DEFAULT NULL,
+        \`features\` JSON DEFAULT NULL,
+        \`badge_text\` VARCHAR(50) DEFAULT NULL,
+        \`is_popular\` TINYINT(1) DEFAULT 0,
+        \`status\` ENUM('Active', 'Inactive') DEFAULT 'Active',
+        \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        \`deleted_at\` DATETIME DEFAULT NULL,
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`idx_ride_packages_code\` (\`package_code\`),
+        KEY \`idx_ride_packages_status\` (\`status\`),
+        KEY \`idx_ride_packages_route_id\` (\`route_id\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
+    // Check count and seed if empty
+    const [rows] = await sequelize.query('SELECT COUNT(*) as cnt FROM `ride_packages`');
+    const count = rows && rows[0] ? Number(rows[0].cnt || rows[0].count || 0) : 0;
+    if (count === 0) {
+      await sequelize.query(`
+        INSERT INTO \`ride_packages\` (\`package_code\`, \`name\`, \`package_type\`, \`rides_count\`, \`validity_days\`, \`price_per_ride\`, \`total_price\`, \`original_price\`, \`discount_percentage\`, \`description\`, \`features\`, \`badge_text\`, \`is_popular\`, \`status\`, \`created_at\`, \`updated_at\`)
+        VALUES
+        ('RP-STARTER-5', 'Starter Ride Pack', 'fixed_bundle', 5, 14, 109.00, 545.00, 745.00, 26.85, 'Great for hybrid commuters testing shuttle convenience with low upfront cost.', '["5 Guaranteed AC Seats", "14 Days Validity", "Free Reschedule up to 15m prior", "Zero Cancellation Fee"]', 'TRIAL PACK', 0, 'Active', NOW(), NOW()),
+        ('RP-WEEKLY-10', 'Weekly Commuter Pack', 'weekly', 10, 30, 99.00, 990.00, 1490.00, 33.56, 'Ideal for 5 days of round-trip office travel per week with guaranteed savings.', '["10 Guaranteed AC Seats", "30 Days Validity", "Save ₹50 per ride", "Priority Boarding Pass with QR", "Flexible Timings"]', 'MOST POPULAR', 1, 'Active', NOW(), NOW()),
+        ('RP-MONTHLY-30', 'Monthly Freedom Pack', 'monthly', 30, 45, 85.00, 2550.00, 4470.00, 42.95, 'Our best value commuter plan! Save over 40% on daily office shuttle commute.', '["30 Guaranteed AC Seats", "45 Days Extended Validity", "Lowest Per-Ride Fare (₹85)", "Instant Boarding Pass", "Zero Rescheduling Fees"]', 'BEST VALUE', 1, 'Active', NOW(), NOW()),
+        ('RP-FLEXI-15', 'Flexi Commuter Pack', 'fixed_bundle', 15, 60, 95.00, 1425.00, 2235.00, 36.24, '60-day extended validity designed for flexible hybrid 2-3 days weekly commuters.', '["15 Guaranteed AC Seats", "60 Days Extended Validity", "Travel Any Day", "Transferable & Reschedulable"]', 'FLEXIBLE', 0, 'Active', NOW(), NOW()),
+        ('RP-CORP-44', 'Corporate Executive Pass', 'monthly', 44, 60, 79.00, 3476.00, 6556.00, 46.98, 'Dedicated monthly round-trip package with deepest discount for daily office commuters.', '["44 Guaranteed AC Seats", "Deepest Discount (47% OFF)", "Valid for 60 Days", "Dedicated Priority Support", "Unlimited Free Reschedules"]', 'MAX SAVINGS', 0, 'Active', NOW(), NOW());
+      `);
+      console.log('[ensureRidePackagesTable] Default Ride Pack packages seeded successfully.');
+    }
+  } catch (err) {
+    console.error('ensureRidePackagesTable error:', err.message);
+  }
+};
+
+const ensureBookingPackageColumns = async () => {
+  try {
+    const [bookingCols] = await sequelize.query('SHOW COLUMNS FROM `bookings`');
+    const existingBookingCols = new Set(bookingCols.map((c) => c.Field.toLowerCase()));
+
+    const bookingColumnsToAdd = [
+      { name: 'package_id', type: 'BIGINT UNSIGNED DEFAULT NULL' },
+      { name: 'package_name', type: 'VARCHAR(100) DEFAULT NULL' },
+      { name: 'package_price_snapshot', type: 'DECIMAL(10, 2) DEFAULT NULL' },
+      { name: 'package_rides_count', type: 'INT UNSIGNED DEFAULT NULL' },
+      { name: 'package_price_per_ride', type: 'DECIMAL(10, 2) DEFAULT NULL' },
+      { name: 'is_package_booking', type: 'TINYINT(1) DEFAULT 0' },
+      { name: 'pickup_stop_name', type: 'VARCHAR(150) DEFAULT NULL' },
+      { name: 'drop_stop_name', type: 'VARCHAR(150) DEFAULT NULL' },
+      { name: 'departure_time', type: 'TIME DEFAULT NULL' },
+      { name: 'arrival_time', type: 'TIME DEFAULT NULL' },
+      { name: 'payu_mihpayid', type: 'VARCHAR(100) DEFAULT NULL' },
+      { name: 'package_purchase_id', type: 'BIGINT UNSIGNED DEFAULT NULL' },
+      { name: 'idempotency_key', type: 'VARCHAR(100) DEFAULT NULL' },
+    ];
+
+    for (const col of bookingColumnsToAdd) {
+      if (!existingBookingCols.has(col.name.toLowerCase())) {
+        await sequelize.query(`ALTER TABLE \`bookings\` ADD COLUMN \`${col.name}\` ${col.type}`);
+        console.log(`[ensureBookingPackageColumns] Added ${col.name} to bookings`);
+      }
+      const [bookingIndexes] = await sequelize.query("SHOW INDEX FROM `bookings` WHERE `Key_name` = 'idx_booking_passenger_idempotency'");
+      if (!bookingIndexes.length) {
+        await sequelize.query('CREATE UNIQUE INDEX `idx_booking_passenger_idempotency` ON `bookings` (`passenger_id`, `idempotency_key`)');
+      }
+    }
+
+    const [tables] = await sequelize.query("SHOW TABLES LIKE 'shuttle_bookings'");
+    if (tables && tables.length > 0) {
+      const [shuttleCols] = await sequelize.query('SHOW COLUMNS FROM `shuttle_bookings`');
+      const existingShuttleCols = new Set(shuttleCols.map((c) => c.Field.toLowerCase()));
+
+      const shuttleColumnsToAdd = [
+        { name: 'pickup_stop_name', type: 'VARCHAR(150) DEFAULT NULL' },
+        { name: 'drop_stop_name', type: 'VARCHAR(150) DEFAULT NULL' },
+        { name: 'package_id', type: 'BIGINT UNSIGNED DEFAULT NULL' },
+        { name: 'package_name', type: 'VARCHAR(100) DEFAULT NULL' },
+        { name: 'package_price_snapshot', type: 'DECIMAL(10, 2) DEFAULT NULL' },
+        { name: 'package_rides_count', type: 'INT UNSIGNED DEFAULT NULL' },
+        { name: 'package_price_per_ride', type: 'DECIMAL(10, 2) DEFAULT NULL' },
+        { name: 'is_package_booking', type: 'TINYINT(1) DEFAULT 0' },
+      ];
+
+      for (const col of shuttleColumnsToAdd) {
+        if (!existingShuttleCols.has(col.name.toLowerCase())) {
+          await sequelize.query(`ALTER TABLE \`shuttle_bookings\` ADD COLUMN \`${col.name}\` ${col.type}`);
+          console.log(`[ensureBookingPackageColumns] Added ${col.name} to shuttle_bookings`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('ensureBookingPackageColumns error:', err.message);
+  }
+};
+
+const ensurePassengerPackageTables = async () => {
+  const [bookingCols] = await sequelize.query('SHOW COLUMNS FROM \`bookings\`');
+  const existingBookingCols = new Set(bookingCols.map((column) => column.Field.toLowerCase()));
+  for (const column of [
+    { name: 'package_purchase_id', type: 'BIGINT UNSIGNED DEFAULT NULL' },
+    { name: 'idempotency_key', type: 'VARCHAR(100) DEFAULT NULL' },
+  ]) {
+    if (!existingBookingCols.has(column.name)) {
+      await sequelize.query(`ALTER TABLE \`bookings\` ADD COLUMN \`${column.name}\` ${column.type}`);
+    }
+  }
+  const [bookingIndexes] = await sequelize.query("SHOW INDEX FROM `bookings` WHERE `Key_name` = 'idx_booking_passenger_idempotency'");
+  if (!bookingIndexes.length) {
+    await sequelize.query('CREATE UNIQUE INDEX `idx_booking_passenger_idempotency` ON `bookings` (`passenger_id`, `idempotency_key`)');
+  }
+
+  await sequelize.query(`
+    CREATE TABLE IF NOT EXISTS \`passenger_package_purchases\` (
+      \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      \`passenger_id\` BIGINT UNSIGNED NOT NULL,
+      \`package_id\` BIGINT UNSIGNED NOT NULL,
+      \`route_id\` BIGINT UNSIGNED DEFAULT NULL,
+      \`package_code\` VARCHAR(50) NOT NULL,
+      \`package_name\` VARCHAR(100) NOT NULL,
+      \`total_rides\` INT UNSIGNED NOT NULL,
+      \`used_rides\` INT UNSIGNED NOT NULL DEFAULT 0,
+      \`reserved_rides\` INT UNSIGNED NOT NULL DEFAULT 0,
+      \`validity_days\` INT UNSIGNED NOT NULL,
+      \`price_per_ride\` DECIMAL(10,2) NOT NULL,
+      \`amount_paid\` DECIMAL(10,2) NOT NULL,
+      \`payment_status\` ENUM('pending','paid','failed','refunded') NOT NULL DEFAULT 'pending',
+      \`status\` ENUM('pending_payment','active','exhausted','expired','cancelled','refunded') NOT NULL DEFAULT 'pending_payment',
+      \`purchased_at\` DATETIME DEFAULT NULL,
+      \`expires_at\` DATETIME DEFAULT NULL,
+      \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (\`id\`),
+      KEY \`idx_package_purchases_passenger_status\` (\`passenger_id\`, \`status\`),
+      KEY \`idx_package_purchases_expires_at\` (\`expires_at\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+  const [purchaseCols] = await sequelize.query('SHOW COLUMNS FROM \`passenger_package_purchases\`');
+  if (!purchaseCols.some((column) => column.Field.toLowerCase() === 'route_id')) {
+    await sequelize.query('ALTER TABLE \`passenger_package_purchases\` ADD COLUMN \`route_id\` BIGINT UNSIGNED DEFAULT NULL AFTER \`package_id\`');
+  }
+  if (!purchaseCols.some((column) => column.Field.toLowerCase() === 'price_per_ride')) {
+    await sequelize.query('ALTER TABLE \`passenger_package_purchases\` ADD COLUMN \`price_per_ride\` DECIMAL(10,2) NOT NULL DEFAULT 0 AFTER \`validity_days\`');
+  }
+  await sequelize.query(`
+    CREATE TABLE IF NOT EXISTS \`package_ride_usage\` (
+      \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      \`purchase_id\` BIGINT UNSIGNED NOT NULL,
+      \`booking_id\` INT UNSIGNED NOT NULL,
+      \`rides_count\` INT UNSIGNED NOT NULL,
+      \`status\` ENUM('reserved','consumed','released') NOT NULL DEFAULT 'reserved',
+      \`reserved_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      \`consumed_at\` DATETIME DEFAULT NULL,
+      \`released_at\` DATETIME DEFAULT NULL,
+      \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (\`id\`),
+      UNIQUE KEY \`idx_package_ride_usage_booking\` (\`booking_id\`),
+      KEY \`idx_package_ride_usage_purchase_status\` (\`purchase_id\`, \`status\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  const [paymentCols] = await sequelize.query('SHOW COLUMNS FROM \`payments\`');
+  if (!paymentCols.some((column) => column.Field.toLowerCase() === 'package_purchase_id')) {
+    await sequelize.query('ALTER TABLE \`payments\` ADD COLUMN \`package_purchase_id\` BIGINT UNSIGNED DEFAULT NULL');
+  }
+};
+
 const ensureDefaultPermissions = async () => {
   try {
     const permissions = [
@@ -303,6 +485,13 @@ const ensureDefaultPermissions = async () => {
       ['passes.read', 'View Shuttle Passes', 'passes', 'read', 'View passenger commuter passes'],
       ['passes.manage', 'Manage Passes', 'passes', 'manage', 'Create and issue shuttle passes'],
 
+      // Ride Packages
+      ['packages.read', 'View Ride Packages', 'packages', 'read', 'View fixed-price Ride Pack commuter packages'],
+      ['packages.create', 'Create Ride Packages', 'packages', 'create', 'Create new Ride Pack package'],
+      ['packages.update', 'Update Ride Packages', 'packages', 'update', 'Edit Ride Pack pricing and rules'],
+      ['packages.delete', 'Delete Ride Packages', 'packages', 'delete', 'Archive Ride Pack package'],
+      ['packages.manage', 'Manage Ride Packages', 'packages', 'manage', 'Full control over fixed-price packages'],
+
       // Coupons
       ['coupons.read', 'View Coupons', 'coupons', 'read', 'View promotional discount coupons'],
       ['coupons.manage', 'Manage Coupons', 'coupons', 'manage', 'Create and configure coupon codes'],
@@ -377,6 +566,7 @@ const ensureDefaultPermissions = async () => {
       'rates.read',
       'passengers.read',
       'bookings.read', 'bookings.manage',
+      'packages.read',
       'reports.read',
       'notifications.read',
       'banners.read',
@@ -407,5 +597,8 @@ module.exports = {
   ensureTripStopArrivalsTable,
   ensureOwnerKycTable,
   ensureOwnerSettlementsTable,
+  ensureRidePackagesTable,
+  ensureBookingPackageColumns,
+  ensurePassengerPackageTables,
   ensureDefaultPermissions,
 };

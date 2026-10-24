@@ -20,6 +20,18 @@ const Booking = sequelize.define('Booking', {
   total_fare: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
   discount_amount: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
   final_amount: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
+  package_id: { type: DataTypes.BIGINT.UNSIGNED, defaultValue: null },
+  package_name: { type: DataTypes.STRING(100), defaultValue: null },
+  package_price_snapshot: { type: DataTypes.DECIMAL(10, 2), defaultValue: null },
+  package_rides_count: { type: DataTypes.INTEGER.UNSIGNED, defaultValue: null },
+  package_price_per_ride: { type: DataTypes.DECIMAL(10, 2), defaultValue: null },
+  is_package_booking: { type: DataTypes.BOOLEAN, defaultValue: false },
+  package_purchase_id: { type: DataTypes.BIGINT.UNSIGNED, defaultValue: null },
+  idempotency_key: { type: DataTypes.STRING(100), defaultValue: null },
+  pickup_stop_name: { type: DataTypes.STRING(150), defaultValue: null },
+  drop_stop_name: { type: DataTypes.STRING(150), defaultValue: null },
+  departure_time: { type: DataTypes.TIME, defaultValue: null },
+  arrival_time: { type: DataTypes.TIME, defaultValue: null },
   payment_status: { type: DataTypes.ENUM('pending', 'paid', 'failed', 'refunded', 'partial_refund'), defaultValue: 'pending' },
   payment_method: { type: DataTypes.STRING(50), defaultValue: null },
   transaction_id: { type: DataTypes.STRING(100), defaultValue: null },
@@ -45,6 +57,9 @@ const Booking = sequelize.define('Booking', {
   updatedAt: 'updated_at',
   paranoid: true,
   deletedAt: 'deleted_at',
+  indexes: [
+    { unique: true, fields: ['passenger_id', 'idempotency_key'], name: 'idx_booking_passenger_idempotency' },
+  ],
 });
 
 module.exports = Booking;

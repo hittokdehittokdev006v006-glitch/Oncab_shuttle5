@@ -3,6 +3,7 @@
 const { Op, fn, col } = require('sequelize');
 const { Booking, Trip, CustomerUser, Stop, RouteStop, Payment, Refund, Coupon, CouponUsage, Route, Vehicle, Driver, DriverDetail, BusType, TripLocation, TripStopArrival } = require('../models');
 const { logAction } = require('../middleware/auditLog');
+const { releaseBookingReservation } = require('../services/packagePurchaseService');
 const sequelize = require('../config/database');
 const { calculateCouponDiscount } = require('../utils/coupon');
 const { resolveFare } = require('../utils/fareCalculator');
@@ -345,17 +346,19 @@ exports.cancel = async (req, res, next) => {
     const booking = await Booking.findByPk(req.params.id, { transaction: t });
     if (!booking) { await t.rollback(); return res.status(404).json({ success: false, message: 'Booking not found' }); }
     if (booking.booking_status === 'cancelled') { await t.rollback(); return res.status(400).json({ success: false, message: 'Booking already cancelled' }); }
+    if (booking.booking_status === 'completed') { await t.rollback(); return res.status(409).json({ success: false, message: 'Completed bookings cannot be cancelled' }); }
 
     const wasSeatAllocated = booking.booking_status === 'confirmed' && booking.payment_status === 'paid';
     const { cancellation_reason } = req.body;
     await booking.update({ booking_status: 'cancelled', status: 'Cancelled', cancellation_reason, cancelled_at: new Date(), cancelled_by: req.user?.id }, { transaction: t });
+    await releaseBookingReservation({ bookingId: booking.id, transaction: t });
 
     const trip = await Trip.findByPk(booking.trip_id, { transaction: t });
     if (trip && wasSeatAllocated) await trip.decrement('booked_seats', { by: booking.total_seats, transaction: t });
 
     // Auto-create refund if payment was captured
     let refundRecord = null;
-    if (booking.payment_status === 'paid') {
+    if (booking.payment_status === 'paid' && Number(booking.final_amount) > 0) {
       const passenger = booking.passenger_id
         ? await CustomerUser.findByPk(booking.passenger_id, { transaction: t })
         : await CustomerUser.findOne({ where: { mobile: booking.passenger_mobile }, transaction: t });

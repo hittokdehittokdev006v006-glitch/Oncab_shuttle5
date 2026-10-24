@@ -6,6 +6,7 @@ const sequelize = require('../config/database');
 const Payment = sequelize.define('Payment', {
   id: { type: DataTypes.INTEGER.UNSIGNED, primaryKey: true, autoIncrement: true },
   booking_id: { type: DataTypes.INTEGER.UNSIGNED, defaultValue: null },
+  package_purchase_id: { type: DataTypes.BIGINT.UNSIGNED, defaultValue: null },
   passenger_id: { type: DataTypes.BIGINT.UNSIGNED, defaultValue: null },
   razorpay_payment_id: { type: DataTypes.STRING(100), defaultValue: null },
   razorpay_order_id: { type: DataTypes.STRING(100), defaultValue: null },

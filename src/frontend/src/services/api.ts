@@ -20,6 +20,18 @@ const api = axios.create({
   timeout: 30000,
 });
 
+const passengerApi = axios.create({
+  baseURL: BASE_URL,
+  headers: { 'Content-Type': 'application/json' },
+  timeout: 30000,
+});
+
+passengerApi.interceptors.request.use((config) => {
+  const token = localStorage.getItem('passenger_access_token');
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
 // Request interceptor - attach access token
 api.interceptors.request.use(
   (config) => {
@@ -240,6 +252,86 @@ export const passesAPI = {
   expiringSoon: (days?: number) => api.get('/passes/expiring', { params: { days } }),
 };
 
+export const packagesAPI = {
+  list: (params?: object) => api.get('/packages', { params }),
+  show: (id: number | string) => api.get(`/packages/${id}`),
+  create: (data: object) => api.post('/packages', data),
+  update: (id: number | string, data: object) => api.put(`/packages/${id}`, data),
+  delete: (id: number | string) => api.delete(`/packages/${id}`),
+  toggleStatus: (id: number | string) => api.patch(`/packages/${id}/toggle-status`),
+};
+
+export const packagePurchasesAPI = {
+  list: (params?: object) => api.get('/package-purchases', { params }),
+  show: (purchaseId: number | string) => api.get(`/package-purchases/${purchaseId}`),
+};
+
+export type RidePackageBookingRequest = {
+  passenger_id: number;
+  passenger_name: string;
+  passenger_mobile: string;
+  passenger_email?: string;
+  origin_stop_id: number;
+  destination_stop_id: number;
+  travel_date: string;
+  seat_numbers?: number[];
+  total_seats?: number;
+  payment_method?: string;
+} & (
+  | { trip_id: number | string; schedule_id?: number | string }
+  | { schedule_id: number | string; trip_id?: number | string }
+) & (
+  | { package_id: number | string; package_code?: never }
+  | { package_code: string; package_id?: never }
+);
+
+export type PackageRideBookingRequest = {
+  package_purchase_id: number;
+  idempotency_key: string;
+  passenger_name?: string;
+  passenger_mobile?: string;
+  passenger_email?: string;
+  origin_stop_id: number;
+  destination_stop_id: number;
+  travel_date: string;
+  seat_numbers?: number[];
+  total_seats?: number;
+} & (
+  | { trip_id: number | string; schedule_id?: number | string }
+  | { schedule_id: number | string; trip_id?: number | string }
+);
+
+export const shuttleAPI = {
+  getPackages: (params?: object) => api.get('/shuttle/packages', { params }),
+  getPackageDetails: (id: number | string) => api.get(`/shuttle/packages/${id}`),
+  search: (data: object) => api.post('/shuttle/search', data),
+  book: (data: object) => api.post('/shuttle/book', data),
+  cancel: (data: object) => api.post('/shuttle/cancel-booking', data),
+  initiatePayu: (data: { booking_id: number; passenger_mobile: string }) =>
+    api.post('/shuttle/payment/payu/initiate', data),
+  getAvailablePackages: (params?: { route_id?: number }) => api.get('/bus/packages', { params }),
+  getAvailablePackage: (id: number | string) => api.get(`/bus/packages/${id}`),
+  createPackageBooking: (data: RidePackageBookingRequest) => api.post('/bus/create-booking', data),
+  initiatePackagePayment: (data: { booking_id: number; passenger_mobile: string }) =>
+    api.post('/bus/payment/payu/initiate', data),
+};
+
+export const passengerPackagesAPI = {
+  createPurchase: (data: { package_id?: number | string; package_code?: string }) =>
+    passengerApi.post('/bus/package-purchases', data),
+  listMine: () => passengerApi.get('/bus/my-packages'),
+  getTransactions: (params?: { page?: number; limit?: number }) =>
+    passengerApi.get('/bus/my-package-transactions', { params }),
+  getMine: (purchaseId: number | string) => passengerApi.get(`/bus/my-packages/${purchaseId}`),
+  getUsage: (purchaseId: number | string) => passengerApi.get(`/bus/my-packages/${purchaseId}/usage`),
+  createBooking: (data: PackageRideBookingRequest) => passengerApi.post('/bus/create-booking', data),
+  initiatePayment: (purchaseId: number | string) =>
+    passengerApi.post('/bus/payment/payu/initiate', { package_purchase_id: purchaseId }),
+  getBooking: (bookingId: number | string) => passengerApi.get(`/bus/bookings/${bookingId}`),
+  cancelBooking: (bookingId: number | string, reason?: string) =>
+    passengerApi.post(`/bus/bookings/${bookingId}/cancel`, { cancellation_reason: reason }),
+};
+
 export const couponsAPI = {
   available: (params?: object) => api.get('/bus/coupons', { params }),
   list: (params?: object) => api.get('/coupons', { params }),
@@ -291,4 +383,3 @@ export const bannersAPI = {
   reorder: (items: { id: number; display_order: number }[]) => api.patch('/banners/reorder', { items }),
   trackClick: (id: number) => api.post(`/banners/${id}/click`),
 };
-

@@ -6,6 +6,10 @@ const { Trip, Route, Stop, Driver, Vehicle, BusType, Booking, OwnerApprovalReque
 const { logAction } = require('../middleware/auditLog');
 const { hasRole } = require('../utils/roles');
 const { releaseUnusedCouponOnTripCompletion } = require('../services/couponReleaseService');
+const {
+  cancelTripPackageBookings,
+  settleTripPackageRides,
+} = require('../services/packagePurchaseService');
 
 const isOwnerRole = (req) => hasRole(req.user, 'owner');
 const ownerCanReadBookings = (req) => (req.userPermissions || []).some((permission) => ['bookings.read', 'bookings.manage'].includes(permission));
@@ -581,6 +585,7 @@ const processTripDateRange = async ({
         await oldTrip.destroy({ transaction });
       } else {
         await oldTrip.update({ status: 'Cancelled' }, { transaction });
+        await cancelTripPackageBookings({ trip: oldTrip, transaction });
       }
     }
   }
@@ -857,13 +862,21 @@ exports.destroy = async (req, res, next) => {
 
 // ── Update Trip Status ─────────────────────────────────────
 exports.updateStatus = async (req, res, next) => {
+  const transaction = await sequelize.transaction();
   try {
-    if (isOwnerRole(req)) return res.status(403).json({ success: false, message: 'Only admins and operators can change trip status' });
-    const trip = await Trip.findByPk(req.params.id);
-    if (!trip) return res.status(404).json({ success: false, message: 'Trip not found' });
+    if (isOwnerRole(req)) {
+      await transaction.rollback();
+      return res.status(403).json({ success: false, message: 'Only admins and operators can change trip status' });
+    }
+    const trip = await Trip.findByPk(req.params.id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!trip) {
+      await transaction.rollback();
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
     const { status } = req.body;
     const allowedStatuses = ['Scheduled', 'Active', 'Completed', 'Cancelled', 'Delayed'];
     if (!status || !allowedStatuses.includes(status)) {
+      await transaction.rollback();
       return res.status(400).json({
         success: false,
         message: `Invalid trip status '${status}'. Allowed values: ${allowedStatuses.join(', ')}`,
@@ -872,8 +885,15 @@ exports.updateStatus = async (req, res, next) => {
     const updates = { status };
     if (status === 'Active') updates.started_at = new Date();
     if (status === 'Completed') updates.completed_at = new Date();
-    await trip.update(updates);
+    await trip.update(updates, { transaction });
 
+    if (status === 'Completed') {
+      await settleTripPackageRides({ tripId: trip.id, transaction });
+    } else if (status === 'Cancelled') {
+      await cancelTripPackageBookings({ trip, transaction });
+    }
+
+    await transaction.commit();
     if (status === 'Completed') {
       try {
         await releaseUnusedCouponOnTripCompletion(trip.id);
@@ -881,9 +901,9 @@ exports.updateStatus = async (req, res, next) => {
         console.warn('[Trip updateStatus] Error releasing unused coupons:', couponErr.message);
       }
     }
-
     res.json({ success: true, message: `Trip status updated to ${status}`, data: trip });
   } catch (err) {
+    if (!transaction.finished) await transaction.rollback();
     next(err);
   }
 };
@@ -1083,4 +1103,3 @@ exports.generateFutureTrips = async (req, res, next) => {
     next(err);
   }
 };
-

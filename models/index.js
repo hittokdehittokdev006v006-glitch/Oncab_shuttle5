@@ -39,6 +39,17 @@ const TripStopArrival = require('./TripStopArrival');
 const PayuWebhook = require('./PayuWebhook');
 const OwnerKyc = require('./OwnerKyc');
 const OwnerSettlement = require('./OwnerSettlement');
+const RidePackage = require('./RidePackage');
+const PassengerPackagePurchase = require('./PassengerPackagePurchase');
+const PackageRideUsage = require('./PackageRideUsage');
+const ShuttleBooking = require('./ShuttleBooking');
+const ShuttleFare = require('./ShuttleFare');
+const ShuttleRoute = require('./ShuttleRoute');
+const ShuttleRouteStop = require('./ShuttleRouteStop');
+const ShuttleSchedule = require('./ShuttleSchedule');
+const ShuttleScheduleStop = require('./ShuttleScheduleStop');
+const ShuttleStop = require('./ShuttleStop');
+const ShuttleVehicle = require('./ShuttleVehicle');
 
 // ─── Role & Permission Associations ─────────────────────
 Role.belongsToMany(Permission, {
@@ -204,6 +215,30 @@ Passenger.hasMany(Pass, { foreignKey: 'passenger_id', as: 'passes' });
 Pass.belongsTo(Route, { foreignKey: 'route_id', as: 'route' });
 Route.hasMany(Pass, { foreignKey: 'route_id', as: 'passes' });
 
+// ─── RidePackage Associations ────────────────────────────
+RidePackage.belongsTo(Route, { foreignKey: 'route_id', as: 'route' });
+Route.hasMany(RidePackage, { foreignKey: 'route_id', as: 'packages' });
+
+Booking.belongsTo(RidePackage, { foreignKey: 'package_id', as: 'package' });
+RidePackage.hasMany(Booking, { foreignKey: 'package_id', as: 'bookings' });
+
+PassengerPackagePurchase.belongsTo(RidePackage, { foreignKey: 'package_id', as: 'package' });
+RidePackage.hasMany(PassengerPackagePurchase, { foreignKey: 'package_id', as: 'purchases' });
+PassengerPackagePurchase.belongsTo(CustomerUser, { foreignKey: 'passenger_id', as: 'passenger' });
+CustomerUser.hasMany(PassengerPackagePurchase, { foreignKey: 'passenger_id', as: 'package_purchases' });
+PassengerPackagePurchase.hasMany(Booking, { foreignKey: 'package_purchase_id', as: 'bookings' });
+Booking.belongsTo(PassengerPackagePurchase, { foreignKey: 'package_purchase_id', as: 'package_purchase' });
+PassengerPackagePurchase.hasMany(PackageRideUsage, { foreignKey: 'purchase_id', as: 'usage' });
+PackageRideUsage.belongsTo(PassengerPackagePurchase, { foreignKey: 'purchase_id', as: 'purchase' });
+PackageRideUsage.belongsTo(Booking, { foreignKey: 'booking_id', as: 'booking' });
+Booking.hasOne(PackageRideUsage, { foreignKey: 'booking_id', as: 'package_ride_usage' });
+
+Payment.belongsTo(PassengerPackagePurchase, { foreignKey: 'package_purchase_id', as: 'package_purchase' });
+PassengerPackagePurchase.hasMany(Payment, { foreignKey: 'package_purchase_id', as: 'payments' });
+
+ShuttleBooking.belongsTo(RidePackage, { foreignKey: 'package_id', as: 'package' });
+RidePackage.hasMany(ShuttleBooking, { foreignKey: 'package_id', as: 'shuttle_bookings' });
+
 module.exports = {
   sequelize,
   Role,
@@ -228,6 +263,17 @@ module.exports = {
   Payment,
   Refund,
   Pass,
+  RidePackage,
+  PassengerPackagePurchase,
+  PackageRideUsage,
+  ShuttleBooking,
+  ShuttleFare,
+  ShuttleRoute,
+  ShuttleRouteStop,
+  ShuttleSchedule,
+  ShuttleScheduleStop,
+  ShuttleStop,
+  ShuttleVehicle,
   Coupon,
   CouponUsage,
   Notification,

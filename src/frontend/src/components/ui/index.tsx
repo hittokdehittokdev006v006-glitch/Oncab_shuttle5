@@ -365,6 +365,9 @@ const X: React.FC<{ size: number }> = ({ size }) => (
 interface InputProps {
   label?: string;
   type?: string;
+  min?: number | string;
+  max?: number | string;
+  step?: number | string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
@@ -373,7 +376,7 @@ interface InputProps {
   disabled?: boolean;
   className?: string;
 }
-export const Input: React.FC<InputProps> = ({ label, type = 'text', value, onChange, placeholder, required, error, disabled, className = '' }) => (
+export const Input: React.FC<InputProps> = ({ label, type = 'text', min, max, step, value, onChange, placeholder, required, error, disabled, className = '' }) => (
   <div className={`space-y-1.5 ${className}`}>
     {label && (
       <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
@@ -382,6 +385,9 @@ export const Input: React.FC<InputProps> = ({ label, type = 'text', value, onCha
     )}
     <input
       type={type}
+      min={min}
+      max={max}
+      step={step}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}

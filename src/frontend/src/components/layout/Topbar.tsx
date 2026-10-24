@@ -15,6 +15,11 @@ const PAGE_TITLES: Record<View, string> = {
   stops: 'Stops & Stations',
   trips: 'Trip Management',
   'scheduled-trips': 'Scheduled Trips',
+  locations: 'Live Location',
+  'driver-location-history': 'Driver Location History',
+  'rate-charts': 'Rate Charts',
+  packages: 'Ride Packages',
+  'package-purchases': 'Package Purchases',
   passengers: 'Passenger Management',
   bookings: 'Booking Management',
   passes: 'Passes Management',
@@ -27,6 +32,11 @@ const PAGE_TITLES: Record<View, string> = {
   notifications: 'Notifications',
   reports: 'Reports & Analytics',
   'audit-logs': 'Audit Logs',
+  'owner-requests': 'Approval Requests',
+  banners: 'Banners',
+  'payu-webhooks': 'PayU Webhooks',
+  'owner-kyc': 'Owner KYC & Bank',
+  'owner-settlements': 'Owner Settlements',
   settings: 'System Settings',
 };
 

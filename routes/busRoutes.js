@@ -8,9 +8,31 @@ const walletController = require('../controllers/walletController');
 const couponController = require('../controllers/couponController');
 const refundController = require('../controllers/refundController');
 const bannerController = require('../controllers/bannerController');
+const shuttleController = require('../controllers/shuttleController');
+const packagePurchaseController = require('../controllers/packagePurchaseController');
+const {
+  authenticatePassenger,
+  optionalPassengerAuth,
+  optionalPassengerTokenAuth,
+} = require('../middleware/passengerAuth');
 
 // ── Public Bus APIs (No Authentication Required) ───────────
 // These are for user-facing mobile app
+
+// Ride Pack Packages (City Flow -> Ride Pack)
+router.get('/packages', shuttleController.getPackages);
+router.post('/packages', shuttleController.getPackages);
+router.get('/packages/:id', shuttleController.getPackageDetails);
+router.post('/package-purchases', authenticatePassenger, packagePurchaseController.create);
+router.get('/my-packages', authenticatePassenger, packagePurchaseController.listMine);
+router.get('/my-package-transactions', authenticatePassenger, packagePurchaseController.listTransactionsMine);
+router.get('/my-packages/:purchaseId/usage', authenticatePassenger, packagePurchaseController.usageMine);
+router.get('/my-packages/:purchaseId', authenticatePassenger, packagePurchaseController.showMine);
+router.get('/bookings/:bookingId', authenticatePassenger, packagePurchaseController.getBookingMine);
+router.post('/bookings/:bookingId/cancel', authenticatePassenger, (req, res, next) => {
+  req.body = { ...(req.body || {}), booking_id: req.params.bookingId };
+  return busController.cancelBooking(req, res, next);
+});
 
 // Bus Types
 router.get('/types', busController.getBusTypes);
@@ -71,17 +93,17 @@ router.get('/bookings/:id/track', busController.trackBooking);
 router.post('/bookings/:id/track', busController.trackBooking);
 
 // Create / Book Ticket
-router.post('/create-booking', busController.createBooking);
-router.post('/book-ticket', busController.createBooking);
-router.post('/book', busController.createBooking);
+router.post('/create-booking', optionalPassengerAuth, busController.createBooking);
+router.post('/book-ticket', optionalPassengerAuth, busController.createBooking);
+router.post('/book', optionalPassengerAuth, busController.createBooking);
 
 // Cancel Booking (Public Mobile App Endpoint)
-router.post('/cancel-booking', busController.cancelBooking);
-router.get('/cancel-booking', busController.cancelBooking);
-router.post('/cancel', busController.cancelBooking);
+router.post('/cancel-booking', optionalPassengerTokenAuth, busController.cancelBooking);
+router.get('/cancel-booking', optionalPassengerTokenAuth, busController.cancelBooking);
+router.post('/cancel', optionalPassengerTokenAuth, busController.cancelBooking);
 
 // PayU checkout and signed hosted-checkout callback
-router.post('/payment/payu/initiate', payuController.initiate);
+router.post('/payment/payu/initiate', optionalPassengerAuth, payuController.initiate);
 router.post('/payment/payu-callback', payuController.callback);
 
 module.exports = router;

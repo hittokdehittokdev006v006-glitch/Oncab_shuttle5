@@ -1,13 +1,38 @@
 'use strict';
 
 const { Op, fn, col } = require('sequelize');
-const { BusType, BusRoute, BusSchedule, BusStop, Trip, Booking, Vehicle, Stop, Route, RouteStop, BusDriverAssignment, CustomerUser, Coupon, CouponUsage, RateChart, Driver, DriverDetail, Payment, WalletTransaction, Refund, TripStopArrival, TripLocation } = require('../models');
+const {
+  BusType,
+  BusRoute,
+  BusSchedule,
+  BusStop,
+  Trip,
+  Booking,
+  Vehicle,
+  Stop,
+  Route,
+  RouteStop,
+  BusDriverAssignment,
+  CustomerUser,
+  Coupon,
+  CouponUsage,
+  RateChart,
+  Driver,
+  DriverDetail,
+  Payment,
+  PassengerPackagePurchase,
+  WalletTransaction,
+  Refund,
+  TripStopArrival,
+  TripLocation,
+} = require('../models');
 const sequelize = require('../config/database');
 const { resolveFare } = require('../utils/fareCalculator');
 const { calculateCouponDiscount } = require('../utils/coupon');
 const BusStopSearchService = require('../services/busStopSearchService');
 const BusRouteSearchService = require('../services/busRouteSearchService');
 const SeatReservationService = require('../services/seatReservationService');
+const PackagePricingService = require('../services/packagePricingService');
 const refundController = require('./refundController');
 
 // Refund admin-approval setting (system_settings.refund_admin_approval_required).
@@ -20,6 +45,10 @@ const refundApprovalRequired = async () => {
   return String(setting.value).trim().toLowerCase() === 'true';
 };
 const { confirmPaidBooking } = require('../services/bookingConfirmationService');
+const {
+  releaseBookingReservation,
+  reserveRides,
+} = require('../services/packagePurchaseService');
 const { getOrderedStopsForRoute } = require('../utils/routeStops');
 
 const buildPagination = (page, limit) => {
@@ -1896,6 +1925,7 @@ exports.cancelUserBooking = async (req, res, next) => {
 // ── 10. Public Create Booking ──────────────────────────────────
 exports.createBooking = async (req, res, next) => {
   const t = await sequelize.transaction();
+  let packageIdempotencyKey = null;
   try {
     const body = req.body || {};
     const {
@@ -1915,7 +1945,8 @@ exports.createBooking = async (req, res, next) => {
       coupon_id,
       coupon_code,
       device_id,
-      special_requests
+      special_requests,
+      package_purchase_id,
     } = body;
 
     const tripIdsToTry = [...new Set([trip_id, schedule_id].filter((id) => id != null && id !== ''))];
@@ -1925,18 +1956,23 @@ exports.createBooking = async (req, res, next) => {
       return res.status(400).json({ status: 400, success: false, message: 'trip_id or schedule_id is required' });
     }
 
-    if (!Number.isInteger(Number(passenger_id)) || Number(passenger_id) <= 0) {
+    const resolvedPassengerId = req.passenger?.id || passenger_id;
+    if (!Number.isInteger(Number(resolvedPassengerId)) || Number(resolvedPassengerId) <= 0) {
       await t.rollback();
       return res.status(400).json({ status: 400, success: false, message: 'A valid passenger_id is required' });
     }
 
-    if (!passenger_name || !passenger_mobile) {
+    const resolvedPassengerName = req.passenger?.name || passenger_name;
+    const resolvedPassengerMobile = req.passenger?.mobile || passenger_mobile;
+    if (!resolvedPassengerName || !resolvedPassengerMobile) {
       await t.rollback();
       return res.status(400).json({ status: 400, success: false, message: 'passenger_name and passenger_mobile are required' });
     }
 
     const passengerUser = await CustomerUser.findOne({
-      where: { id: passenger_id, mobile: String(passenger_mobile).trim() },
+      where: req.passenger
+        ? { id: resolvedPassengerId }
+        : { id: resolvedPassengerId, mobile: String(resolvedPassengerMobile).trim() },
       transaction: t,
       lock: t.LOCK.UPDATE,
     });
@@ -1947,6 +1983,40 @@ exports.createBooking = async (req, res, next) => {
     if (passengerUser.status === 'Inactive' || passengerUser.block_status === 'Block') {
       await t.rollback();
       return res.status(403).json({ status: 403, success: false, message: 'Passenger account is not active' });
+    }
+
+    if (package_purchase_id) {
+      if (!req.passenger || Number(req.passenger.id) !== Number(passengerUser.id)) {
+        await t.rollback();
+        return res.status(401).json({ status: 401, success: false, message: 'A passenger token belonging to this package owner is required' });
+      }
+      packageIdempotencyKey = String(body.idempotency_key || req.headers['idempotency-key'] || '').trim();
+      if (!packageIdempotencyKey || packageIdempotencyKey.length > 100) {
+        await t.rollback();
+        return res.status(400).json({
+          status: 400,
+          success: false,
+          message: 'A unique idempotency_key of at most 100 characters is required for package bookings',
+        });
+      }
+      const existingBooking = await Booking.findOne({
+        where: { passenger_id: passengerUser.id, idempotency_key: packageIdempotencyKey },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (existingBooking) {
+        if (Number(existingBooking.package_purchase_id) !== Number(package_purchase_id)) {
+          await t.rollback();
+          return res.status(409).json({ status: 409, success: false, message: 'idempotency_key has already been used for another booking' });
+        }
+        await t.commit();
+        return res.status(200).json({
+          status: 200,
+          success: true,
+          message: 'Existing package booking returned for this idempotency_key',
+          data: { booking_id: existingBooking.id, ...existingBooking.toJSON() },
+        });
+      }
     }
 
     const requestedTravelDate = travel_date ? String(travel_date).slice(0, 10) : null;
@@ -2049,51 +2119,156 @@ exports.createBooking = async (req, res, next) => {
     }
 
     const effectiveCapacity = trip.vehicle?.total_seats || trip.bus_type?.total_seats || trip.seat_capacity || 30;
-    const numSeats = total_seats || (requestedSeats.length > 0 ? requestedSeats.length : 1);
+    const numSeats = Number(total_seats || (requestedSeats.length > 0 ? requestedSeats.length : 1));
+    if (!Number.isInteger(numSeats) || numSeats < 1) {
+      await t.rollback();
+      return res.status(400).json({ status: 400, success: false, message: 'total_seats must be a positive whole number' });
+    }
+    if (requestedSeats.length > 0 && requestedSeats.length !== numSeats) {
+      await t.rollback();
+      return res.status(400).json({ status: 400, success: false, message: 'total_seats must match the number of selected seats' });
+    }
     const available = effectiveCapacity - (trip.booked_seats || 0);
     if (available < numSeats) {
       await t.rollback();
       return res.status(409).json({ status: 409, success: false, message: `Only ${available} seats available` });
     }
 
-    const fareResult = await resolveFare({
-      routeId: trip.route_id,
-      originStopId: origin_stop_id,
-      destinationStopId: destination_stop_id,
-      fallbackFare: trip.base_fare,
-      transaction: t,
-    });
-    if (fareResult.error) {
-      await t.rollback();
-      return res.status(400).json({ status: 400, success: false, message: fareResult.error });
-    }
-
-    let total_fare = fareResult.fare * numSeats;
+    let isPackageBooking = false;
+    let packageSnapshot = null;
+    let appliedPackage = null;
+    let total_fare = 0;
     let discount_amount = 0;
     let appliedCoupon = null;
 
-    if (coupon_id || coupon_code) {
-      const couponResult = await calculateCouponDiscount({
-        couponId: coupon_id,
-        couponCode: coupon_code,
-        amount: total_fare,
-        seatCount: numSeats,
-        passengerId: passengerUser.id,
-        deviceId: device_id,
-        transaction: t,
-        lock: true,
-      });
-      if (couponResult.error) {
+    const requestedPackageId = body.package_id || body.package_code || body.selected_package_id;
+    let packagePurchase = null;
+
+    if (package_purchase_id) {
+      if (!req.passenger || Number(req.passenger.id) !== Number(passengerUser.id)) {
         await t.rollback();
-        return res.status(400).json({ status: 400, success: false, message: couponResult.error });
+        return res.status(401).json({ status: 401, success: false, message: 'A passenger token belonging to this package owner is required' });
       }
-      appliedCoupon = couponResult.coupon;
-      discount_amount = couponResult.discount;
-      await appliedCoupon.increment('used_count', { by: 1, transaction: t });
+      if (requestedPackageId) {
+        await t.rollback();
+        return res.status(400).json({ status: 400, success: false, message: 'Use package_purchase_id without package_id or package_code' });
+      }
+      packagePurchase = await PassengerPackagePurchase.findOne({
+        where: { id: package_purchase_id, passenger_id: passengerUser.id },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (!packagePurchase) {
+        await t.rollback();
+        return res.status(404).json({ status: 404, success: false, message: 'Passenger package purchase was not found' });
+      }
+      if (packagePurchase.payment_status !== 'paid' || packagePurchase.status !== 'active') {
+        await t.rollback();
+        return res.status(409).json({ status: 409, success: false, message: 'Passenger package purchase is not active' });
+      }
+      if (!packagePurchase.expires_at || new Date(packagePurchase.expires_at) <= new Date()) {
+        await packagePurchase.update({ status: 'expired' }, { transaction: t });
+        await t.commit();
+        return res.status(409).json({ status: 409, success: false, message: 'Passenger package purchase has expired' });
+      }
+      if (packagePurchase.route_id && Number(packagePurchase.route_id) !== Number(trip.route_id)) {
+        await t.rollback();
+        return res.status(400).json({ status: 400, success: false, message: 'Passenger package purchase is not valid for this route' });
+      }
+      const availablePackageRides = Number(packagePurchase.total_rides)
+        - Number(packagePurchase.used_rides)
+        - Number(packagePurchase.reserved_rides);
+      if (availablePackageRides < numSeats) {
+        await t.rollback();
+        return res.status(409).json({
+          status: 409,
+          success: false,
+          message: 'Passenger package purchase does not have enough rides available',
+          data: { available_rides: availablePackageRides, requested_rides: numSeats },
+        });
+      }
+      isPackageBooking = true;
+      packageSnapshot = {
+        package_id: packagePurchase.package_id,
+        package_code: packagePurchase.package_code,
+        package_name: packagePurchase.package_name,
+        package_type: null,
+        rides_count: Number(packagePurchase.total_rides),
+        validity_days: Number(packagePurchase.validity_days),
+        price_per_ride: Number(packagePurchase.price_per_ride),
+        package_price: Number(packagePurchase.amount_paid),
+        final_booking_amount: 0,
+      };
     }
 
-    const final_amount = Math.max(0, total_fare - discount_amount);
-    const walletPaymentRequested = use_wallet === true || String(use_wallet).toLowerCase() === 'true' || payment_method === 'wallet';
+    if (packagePurchase) {
+      total_fare = 0;
+      discount_amount = 0;
+    } else if (requestedPackageId) {
+      const packageValidation = await PackagePricingService.calculateAndValidatePackageFare({
+        packageId: requestedPackageId,
+        packageCode: requestedPackageId,
+        routeId: trip.route_id,
+        seatCount: numSeats,
+        travelDate: travel_date || trip.trip_date,
+        baseFare: trip.base_fare,
+        transaction: t,
+      });
+
+      if (!packageValidation.isValid) {
+        await t.rollback();
+        return res.status(400).json({
+          status: 400,
+          success: false,
+          message: packageValidation.error,
+          code: packageValidation.code || 'PACKAGE_INVALID',
+        });
+      }
+
+      isPackageBooking = true;
+      appliedPackage = packageValidation.package;
+      packageSnapshot = packageValidation.priceSnapshot;
+      total_fare = packageSnapshot.original_price || packageSnapshot.package_price;
+      discount_amount = packageSnapshot.savings_amount || 0;
+    } else {
+      const fareResult = await resolveFare({
+        routeId: trip.route_id,
+        originStopId: origin_stop_id,
+        destinationStopId: destination_stop_id,
+        fallbackFare: trip.base_fare,
+        transaction: t,
+      });
+      if (fareResult.error) {
+        await t.rollback();
+        return res.status(400).json({ status: 400, success: false, message: fareResult.error });
+      }
+
+      total_fare = fareResult.fare * numSeats;
+
+      if (coupon_id || coupon_code) {
+        const couponResult = await calculateCouponDiscount({
+          couponId: coupon_id,
+          couponCode: coupon_code,
+          amount: total_fare,
+          seatCount: numSeats,
+          passengerId: passengerUser.id,
+          deviceId: device_id,
+          transaction: t,
+          lock: true,
+        });
+        if (couponResult.error) {
+          await t.rollback();
+          return res.status(400).json({ status: 400, success: false, message: couponResult.error });
+        }
+        appliedCoupon = couponResult.coupon;
+        discount_amount = couponResult.discount;
+        await appliedCoupon.increment('used_count', { by: 1, transaction: t });
+      }
+    }
+
+    const final_amount = packagePurchase ? 0 : (isPackageBooking ? packageSnapshot.final_booking_amount : Math.max(0, total_fare - discount_amount));
+    const walletPaymentRequested = !packagePurchase
+      && (use_wallet === true || String(use_wallet).toLowerCase() === 'true' || payment_method === 'wallet');
     let walletBalanceAfter = null;
     if (walletPaymentRequested) {
       const currentBalance = Number(passengerUser.wallet_balance || 0);
@@ -2115,9 +2290,9 @@ exports.createBooking = async (req, res, next) => {
       booking_reference,
       trip_id: trip.id,
       passenger_id: passengerUser.id,
-      passenger_name,
-      passenger_mobile,
-      passenger_email: passenger_email || null,
+      passenger_name: resolvedPassengerName,
+      passenger_mobile: resolvedPassengerMobile,
+      passenger_email: req.passenger?.email || passenger_email || null,
       origin_stop_id: origin_stop_id || null,
       destination_stop_id: destination_stop_id || null,
       travel_date: travel_date || trip.trip_date,
@@ -2126,15 +2301,32 @@ exports.createBooking = async (req, res, next) => {
       total_fare,
       discount_amount,
       final_amount,
-      payment_method: walletPaymentRequested ? 'wallet' : (payment_method || 'cash'),
+      package_id: isPackageBooking ? (packagePurchase?.package_id || appliedPackage.id) : null,
+      package_name: isPackageBooking ? (packagePurchase?.package_name || appliedPackage.name) : null,
+      package_price_snapshot: isPackageBooking ? packageSnapshot.package_price : null,
+      package_rides_count: isPackageBooking ? packageSnapshot.rides_count : null,
+      package_price_per_ride: isPackageBooking ? packageSnapshot.price_per_ride : null,
+      is_package_booking: isPackageBooking,
+      package_purchase_id: packagePurchase?.id || null,
+      idempotency_key: packagePurchase ? packageIdempotencyKey : null,
+      payment_method: packagePurchase ? 'ride_package' : (walletPaymentRequested ? 'wallet' : (payment_method || 'cash')),
       coupon_id: appliedCoupon?.id || null,
       special_requests: special_requests || null,
       boarding_pass_code: null,
       boarding_pin: null,
       booking_status: 'pending',
-      payment_status: (walletPaymentRequested || final_amount <= 0) ? 'paid' : 'pending',
+      payment_status: (packagePurchase || walletPaymentRequested || final_amount <= 0) ? 'paid' : 'pending',
       qr_token: null,
     }, { transaction: t });
+
+    if (packagePurchase) {
+      await reserveRides({
+        purchase: packagePurchase,
+        booking,
+        ridesCount: numSeats,
+        transaction: t,
+      });
+    }
 
     if (appliedCoupon) {
       await CouponUsage.create({
@@ -2170,7 +2362,7 @@ exports.createBooking = async (req, res, next) => {
       }, { transaction: t });
     }
 
-    if (walletPaymentRequested || final_amount <= 0) {
+    if (packagePurchase || walletPaymentRequested || final_amount <= 0) {
       await confirmPaidBooking({ booking, transaction: t });
     }
 
@@ -2179,7 +2371,9 @@ exports.createBooking = async (req, res, next) => {
     res.status(201).json({
       status: 201,
       success: true,
-      message: walletPaymentRequested ? 'Booking created and paid from wallet' : final_amount <= 0 ? 'Booking confirmed with no payment due' : 'Booking created and awaiting payment',
+      message: packagePurchase
+        ? `${numSeats} package ride${numSeats === 1 ? '' : 's'} reserved for this booking`
+        : walletPaymentRequested ? 'Booking created and paid from wallet' : final_amount <= 0 ? 'Booking confirmed with no payment due' : 'Booking created and awaiting payment',
       data: {
         booking_id: booking.id,
         ...bookingData,
@@ -2187,7 +2381,27 @@ exports.createBooking = async (req, res, next) => {
       }
     });
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
+    if (packageIdempotencyKey && err.name === 'SequelizeUniqueConstraintError') {
+      try {
+        const existingBooking = await Booking.findOne({
+          where: { passenger_id: req.passenger?.id, idempotency_key: packageIdempotencyKey },
+        });
+        if (existingBooking) {
+          return res.status(200).json({
+            status: 200,
+            success: true,
+            message: 'Existing package booking returned for this idempotency_key',
+            data: { booking_id: existingBooking.id, ...existingBooking.toJSON() },
+          });
+        }
+      } catch (lookupError) {
+        return next(lookupError);
+      }
+    }
+    if (['PACKAGE_PURCHASE_INACTIVE', 'PACKAGE_PURCHASE_EXPIRED', 'INSUFFICIENT_PACKAGE_RIDES'].includes(err.code)) {
+      return res.status(409).json({ status: 409, success: false, message: err.message, code: err.code });
+    }
     next(err);
   }
 };
@@ -2408,6 +2622,15 @@ exports.cancelBooking = async (req, res, next) => {
       });
     }
 
+    if (req.passenger && Number(booking.passenger_id) !== Number(req.passenger.id)) {
+      await t.rollback();
+      return res.status(403).json({ status: 403, success: false, message: 'Booking does not belong to this passenger' });
+    }
+    if (booking.package_purchase_id && !req.passenger) {
+      await t.rollback();
+      return res.status(401).json({ status: 401, success: false, message: 'Passenger authentication is required to cancel a package booking' });
+    }
+
     // --------------------------------------------------
     // 2. OPTIONAL PASSENGER MOBILE VALIDATION
     // --------------------------------------------------
@@ -2436,6 +2659,15 @@ exports.cancelBooking = async (req, res, next) => {
         status: 400,
         success: false,
         message: 'Booking is already cancelled',
+      });
+    }
+
+    if (booking.booking_status === 'completed') {
+      await t.rollback();
+      return res.status(409).json({
+        status: 409,
+        success: false,
+        message: 'Completed bookings cannot be cancelled',
       });
     }
 
@@ -2601,6 +2833,8 @@ exports.cancelBooking = async (req, res, next) => {
       },
       { transaction: t }
     );
+
+    await releaseBookingReservation({ bookingId: booking.id, transaction: t });
 
     // --------------------------------------------------
     // 8. RELEASE BOOKED SEATS

@@ -394,16 +394,41 @@ export interface Banner {
   updated_at: string | null;
 }
 
+// ── ride_packages (City Flow -> Ride Pack) ──
+export interface RidePackage {
+  id: number;
+  package_code: string;
+  name: string;
+  package_type: 'single_trip' | 'fixed_bundle' | 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'annual';
+  rides_count: number;
+  validity_days: number;
+  price_per_ride: number;
+  total_price: number;
+  original_price?: number | null;
+  discount_percentage?: number;
+  route_id?: number | null;
+  description?: string | null;
+  features?: string[] | null;
+  badge_text?: string | null;
+  is_popular?: boolean;
+  status: 'Active' | 'Inactive';
+  savings_amount?: number;
+  formatted_price?: string;
+  formatted_per_ride?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 // ── View type for navigation ──
 export type View =
   | 'scheduled-trips'
   | 'trips'
   | 'drivers'
   | 'vehicles'
+  | 'packages'
   | 'route-creation'
   | 'passes-management'
   | 'notifications'
   | 'cancelled-tickets-refund'
   | 'failed-paid-refund'
   | 'banners';
-

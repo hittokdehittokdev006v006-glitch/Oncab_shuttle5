@@ -6,6 +6,8 @@ const { Driver, DriverDetail, Trip, Route, Stop, RouteStop, Vehicle, Booking, Pa
 const { saveOtp, verifyOtp: verifySmsOtp, sendFast2SMSOtp } = require('../services/smsService');
 const { releaseUnusedCouponOnTripCompletion } = require('../services/couponReleaseService');
 const { getOrderedStopsForRoute } = require('../utils/routeStops');
+const sequelize = require('../config/database');
+const { settleTripPackageRides } = require('../services/packagePurchaseService');
 
 // Helper to generate JWT Token for Driver
 const generateDriverToken = (driver) => {
@@ -533,20 +535,30 @@ exports.startTrip = async (req, res, next) => {
  * POST /api/bus-driver/trips/:id/complete
  */
 exports.completeTrip = async (req, res, next) => {
+  const transaction = await sequelize.transaction();
   try {
-    const trip = await Trip.findOne({ where: { id: req.params.id, driver_id: req.driver.id } });
+    const trip = await Trip.findOne({
+      where: { id: req.params.id, driver_id: req.driver.id },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
     if (!trip) {
+      await transaction.rollback();
       return res.status(404).json({ status: 404, success: false, message: 'Trip not found or not assigned to you' });
     }
 
     if (trip.status === 'Completed') {
+      await transaction.rollback();
       return res.status(400).json({ status: 400, success: false, message: 'Trip is already completed' });
     }
 
     await trip.update({
       status: 'Completed',
       completed_at: new Date(),
-    });
+    }, { transaction });
+
+    await settleTripPackageRides({ tripId: trip.id, transaction });
+    await transaction.commit();
 
     // Automatically remove coupon usage for passengers who cancelled or did not board
     try {
@@ -598,6 +610,7 @@ exports.completeTrip = async (req, res, next) => {
       },
     });
   } catch (err) {
+    if (!transaction.finished) await transaction.rollback();
     next(err);
   }
 };

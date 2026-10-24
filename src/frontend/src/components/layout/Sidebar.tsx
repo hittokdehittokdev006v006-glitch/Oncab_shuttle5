@@ -14,6 +14,7 @@ export type View =
   | 'routes' | 'stops' | 'trips' | 'scheduled-trips'
   | 'locations' | 'driver-location-history'
   | 'rate-charts'
+  | 'packages' | 'package-purchases'
   | 'passengers' | 'bookings' | 'passes' | 'cancelled-tickets' | 'refunds'
   | 'failed-refunds' | 'paid-refunds' | 'payments' | 'notifications'
   | 'coupons' | 'reports' | 'audit-logs' | 'settings' | 'owner-requests' | 'banners'
@@ -71,6 +72,8 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: 'Bookings & Revenue',
     items: [
+      { id: 'packages', label: 'Ride Packages', icon: Package, permission: 'packages.read' },
+      { id: 'package-purchases', label: 'Package Purchases', icon: CreditCard, permission: 'packages.read' },
       { id: 'passengers', label: 'Passengers', icon: UserCheck, permission: 'passengers.read' },
       { id: 'bookings', label: 'Bookings', icon: Ticket, permission: 'bookings.read' },
       { id: 'passes', label: 'Passes', icon: Package, permission: 'passes.read' },

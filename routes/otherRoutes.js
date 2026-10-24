@@ -9,6 +9,8 @@ const couponController = require('../controllers/couponController');
 const notificationController = require('../controllers/notificationController');
 const settingController = require('../controllers/settingController');
 const paymentController = require('../controllers/paymentController');
+const shuttleController = require('../controllers/shuttleController');
+const packagePurchaseController = require('../controllers/packagePurchaseController');
 
 router.use(authenticate);
 
@@ -27,6 +29,18 @@ router.get('/passes/:id', requirePermission('passes.read'), passController.show)
 router.post('/passes', requirePermission('passes.manage'), passController.create);
 router.put('/passes/:id', requirePermission('passes.manage'), passController.update);
 router.delete('/passes/:id', requirePermission('passes.manage'), passController.destroy);
+
+// Ride Packages (City Flow -> Ride Pack)
+router.get('/packages', requirePermission('packages.read'), shuttleController.getPackages);
+router.get('/packages/:id', requirePermission('packages.read'), shuttleController.getPackageDetails);
+router.post('/packages', requirePermission('packages.manage'), shuttleController.createPackage);
+router.put('/packages/:id', requirePermission('packages.manage'), shuttleController.updatePackage);
+router.patch('/packages/:id/toggle-status', requirePermission('packages.manage'), shuttleController.togglePackageStatus);
+router.delete('/packages/:id', requirePermission('packages.manage'), shuttleController.deletePackage);
+
+// Prepaid Ride Package purchases and transaction ledger
+router.get('/package-purchases', requirePermission('packages.read'), packagePurchaseController.listAdmin);
+router.get('/package-purchases/:purchaseId', requirePermission('packages.read'), packagePurchaseController.showAdmin);
 
 // Coupons
 router.post('/coupons/validate', requirePermission('coupons.read'), couponController.validate);
