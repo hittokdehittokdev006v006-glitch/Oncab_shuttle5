@@ -739,6 +739,9 @@ class ShuttleController {
             couponCode: coupon_code,
             amount: totalFare,
             seatCount: totalSeatsToBook,
+            passengerId: req.passenger?.id || null,
+            passengerMobile: resolvedPassengerMobile,
+            deviceId: device_id,
             transaction: t,
             lock: true,
           });

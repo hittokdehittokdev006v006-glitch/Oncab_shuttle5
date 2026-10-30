@@ -53,7 +53,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => { refreshUser(); }, [refreshUser]);
 
   const login = async (email: string, password: string) => {
-    const resp = await api.post('/auth/login', { email, password });
+    const deviceInfo = {
+      screen_width: window.screen?.width || window.innerWidth,
+      screen_height: window.screen?.height || window.innerHeight,
+      color_depth: window.screen?.colorDepth || 24,
+      pixel_ratio: window.devicePixelRatio || 1,
+      device_type: window.innerWidth <= 768 ? 'mobile' : window.innerWidth <= 1024 ? 'tablet' : 'desktop',
+    };
+    const resp = await api.post('/auth/login', { email, password, device_info: deviceInfo });
     const { user, permissions, accessToken, refreshToken } = resp.data.data;
     localStorage.setItem('access_token', accessToken);
     localStorage.setItem('refresh_token', refreshToken);

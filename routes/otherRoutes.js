@@ -49,6 +49,7 @@ router.get('/coupons/:id/usages', requirePermission('coupons.read'), couponContr
 router.get('/coupons/:id', requirePermission('coupons.read'), couponController.show);
 router.post('/coupons', requirePermission('coupons.manage'), couponController.create);
 router.put('/coupons/:id', requirePermission('coupons.manage'), couponController.update);
+router.delete('/coupons/:id/usages/:usageId', requirePermission('coupons.manage'), couponController.deleteUsage);
 router.delete('/coupons/:id', requirePermission('coupons.manage'), couponController.destroy);
 
 // Notifications

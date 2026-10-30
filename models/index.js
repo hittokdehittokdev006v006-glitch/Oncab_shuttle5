@@ -6,6 +6,7 @@ const sequelize = require('../config/database');
 const Role = require('./Role');
 const Permission = require('./Permission');
 const AdminUser = require('./AdminUser');
+const AdminSession = require('./AdminSession');
 const CustomerUser = require('./CustomerUser');
 const Driver = require('./Driver');
 const DriverDetail = require('./DriverDetail');
@@ -50,6 +51,7 @@ const ShuttleSchedule = require('./ShuttleSchedule');
 const ShuttleScheduleStop = require('./ShuttleScheduleStop');
 const ShuttleStop = require('./ShuttleStop');
 const ShuttleVehicle = require('./ShuttleVehicle');
+const CrossConnection = require('./CrossConnection');
 
 // ─── Role & Permission Associations ─────────────────────
 Role.belongsToMany(Permission, {
@@ -82,6 +84,8 @@ Vehicle.hasMany(OwnerSettlement, { foreignKey: 'vehicle_id', as: 'settlements' }
 OwnerSettlement.belongsTo(Vehicle, { foreignKey: 'vehicle_id', as: 'vehicle' });
 OwnerSettlement.belongsTo(AdminUser, { foreignKey: 'processed_by', as: 'processor' });
 OwnerKyc.belongsTo(AdminUser, { foreignKey: 'owner_id', as: 'owner' });
+AdminUser.hasMany(AdminSession, { foreignKey: 'user_id', as: 'sessions' });
+AdminSession.belongsTo(AdminUser, { foreignKey: 'user_id', as: 'user' });
 
 // ─── Driver Associations ─────────────────────────────────
 Driver.hasOne(DriverDetail, { foreignKey: 'driver_id', as: 'details', onDelete: 'CASCADE' });
@@ -239,6 +243,17 @@ PassengerPackagePurchase.hasMany(Payment, { foreignKey: 'package_purchase_id', a
 ShuttleBooking.belongsTo(RidePackage, { foreignKey: 'package_id', as: 'package' });
 RidePackage.hasMany(ShuttleBooking, { foreignKey: 'package_id', as: 'shuttle_bookings' });
 
+// ─── Cross Connection Associations ───────────────────────
+CrossConnection.belongsTo(Trip, { foreignKey: 'trip1_id', as: 'trip1' });
+CrossConnection.belongsTo(Trip, { foreignKey: 'trip2_id', as: 'trip2' });
+CrossConnection.belongsTo(Vehicle, { foreignKey: 'vehicle1_id', as: 'vehicle1' });
+CrossConnection.belongsTo(Vehicle, { foreignKey: 'vehicle2_id', as: 'vehicle2' });
+CrossConnection.belongsTo(Driver, { foreignKey: 'driver1_id', as: 'driver1' });
+CrossConnection.belongsTo(Driver, { foreignKey: 'driver2_id', as: 'driver2' });
+
+Trip.hasMany(CrossConnection, { foreignKey: 'trip1_id', as: 'cross_connections_primary' });
+Trip.hasMany(CrossConnection, { foreignKey: 'trip2_id', as: 'cross_connections_secondary' });
+
 module.exports = {
   sequelize,
   Role,
@@ -288,4 +303,6 @@ module.exports = {
   PayuWebhook,
   OwnerKyc,
   OwnerSettlement,
+  AdminSession,
+  CrossConnection,
 };

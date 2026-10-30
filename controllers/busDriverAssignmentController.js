@@ -1,8 +1,9 @@
 'use strict';
 
 const { Op, UniqueConstraintError } = require('sequelize');
-const { sequelize, Driver, BusType, Route, Stop, BusRoute, BusStop, BusSchedule, BusDriverAssignment ,Trip} = require('../models');
+const { sequelize, Driver, DriverDetail, BusType, Route, Stop, BusRoute, BusStop, BusSchedule, BusDriverAssignment, Trip } = require('../models');
 const { getOrderedStopsForRoute } = require('../utils/routeStops');
+const { COMPLETION_RADIUS_METERS, checkProximityToStop, getCompletionRadiusMeters } = require('../utils/geoUtils');
 
 const assignmentIncludes = [
   {
@@ -576,6 +577,48 @@ exports.completeAssignment = async (req, res, next) => {
     if (assignment.status !== 'started') return res.status(409).json({ status: 409, success: false, message: 'Only started assignments can be completed' });
     if (endOdometer <= Number(assignment.start_odometer)) {
       return res.status(400).json({ status: 400, success: false, message: 'end_odometer must be greater than start_odometer' });
+    }
+
+    // Location-based completion check if schedule has route stops
+    if (assignment.schedule_id) {
+      const schedule = await BusSchedule.findByPk(assignment.schedule_id);
+      if (schedule && schedule.route_id) {
+        const stops = await getOrderedStopsForRoute(schedule.route_id, schedule.departure_time);
+        const finalStop = stops && stops.length > 0 ? stops[stops.length - 1] : null;
+
+        if (finalStop && finalStop.latitude != null && finalStop.longitude != null) {
+          const detail = await DriverDetail.findOne({ where: { driver_id: req.driver.id } });
+          const rawLat = req.body?.latitude != null ? req.body.latitude : detail?.latitude;
+          const rawLng = req.body?.longitude != null ? req.body.longitude : detail?.longitude;
+          const accuracy = req.body?.accuracy != null ? Number(req.body.accuracy) : null;
+          const driverLat = rawLat != null && rawLat !== '' ? Number(rawLat) : null;
+          const driverLng = rawLng != null && rawLng !== '' ? Number(rawLng) : null;
+
+          if (driverLat != null && driverLng != null && Number.isFinite(driverLat) && Number.isFinite(driverLng)) {
+            const allowedRadius = await getCompletionRadiusMeters();
+            const proximity = checkProximityToStop(driverLat, driverLng, finalStop.latitude, finalStop.longitude, allowedRadius, accuracy);
+            if (!proximity.isWithin) {
+              return res.status(400).json({
+                status: 400,
+                success: false,
+                code: 'OUTSIDE_RADIUS',
+                message: `You must reach within ${allowedRadius} meters of the final destination to complete this trip.`,
+                data: {
+                  distance_meters: proximity.rawDistanceMeters,
+                  effective_distance_meters: proximity.effectiveDistanceMeters,
+                  allowed_radius_meters: allowedRadius,
+                  final_stop: {
+                    id: finalStop.id,
+                    stop_name: finalStop.stop_name,
+                    latitude: Number(finalStop.latitude),
+                    longitude: Number(finalStop.longitude),
+                  },
+                },
+              });
+            }
+          }
+        }
+      }
     }
 
     await assignment.update({ status: 'completed', end_odometer: endOdometer, ...(req.body?.notes !== undefined ? { notes: req.body.notes } : {}) });

@@ -1,7 +1,7 @@
 'use strict';
 
 const { Op } = require('sequelize');
-const { sequelize, Driver, DriverDetail, Vehicle, OwnerApprovalRequest } = require('../models');
+const { sequelize, Driver, DriverDetail, Vehicle, OwnerApprovalRequest, AdminUser } = require('../models');
 const { logAction } = require('../middleware/auditLog');
 const { hasRole } = require('../utils/roles');
 const {
@@ -27,7 +27,7 @@ const forceOwnerScope = (req, where = {}) => {
 // ── List Drivers ───────────────────────────────────────────
 exports.list = async (req, res, next) => {
     try {
-        const { page, limit, search, status, online_status, block_status } = req.query;
+        const { page, limit, search, status, online_status, block_status, owner_id, is_bus_driver, complete_status } = req.query;
         const { offset, limit: lim, page: p } = buildPagination(page, limit);
         const where = {};
 
@@ -42,6 +42,11 @@ exports.list = async (req, res, next) => {
         if (status) where.status = status;
         if (online_status) where.online_status = online_status;
         if (block_status) where.block_status = block_status;
+        if (owner_id && !isOwnerRole(req)) where.owner_id = owner_id;
+        if (is_bus_driver !== undefined && is_bus_driver !== '') {
+            where.is_bus_driver = is_bus_driver === 'true' || is_bus_driver === true || is_bus_driver === '1';
+        }
+        if (complete_status) where.complete_status = complete_status;
 
         const ownerScopedWhere = forceOwnerScope(req, where);
 
@@ -49,6 +54,12 @@ exports.list = async (req, res, next) => {
             where: ownerScopedWhere,
             include: [
                 { model: DriverDetail, as: 'details' },
+                {
+                    model: AdminUser,
+                    as: 'owner',
+                    attributes: ['id', 'name', 'email', 'phone'],
+                    required: false,
+                },
                 {
                     model: Vehicle,
                     as: 'vehicles',

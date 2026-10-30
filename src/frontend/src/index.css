@@ -1573,3 +1573,60 @@ html.light-mode table tr:hover {
 html.light-mode table td {
   color: #1e293b !important;
 }
+
+/* ── Leaflet Popup Dark & Light Mode Styling ────────────────── */
+html.dark-mode .leaflet-popup-content-wrapper,
+html.dark .leaflet-popup-content-wrapper {
+  background-color: #0f172a !important;
+  color: #f1f5f9 !important;
+  border: 1px solid #334155 !important;
+  border-radius: 12px !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.6) !important;
+}
+
+html.dark-mode .leaflet-popup-tip,
+html.dark .leaflet-popup-tip {
+  background-color: #0f172a !important;
+  border: 1px solid #334155 !important;
+}
+
+html.dark-mode .leaflet-popup-close-button,
+html.dark .leaflet-popup-close-button {
+  color: #94a3b8 !important;
+}
+
+html.dark-mode .leaflet-popup-close-button:hover,
+html.dark .leaflet-popup-close-button:hover {
+  color: #f8fafc !important;
+}
+
+/* Ensure inner elements in popups respect dark mode contrast */
+html.dark-mode .leaflet-popup .text-slate-900,
+html.dark .leaflet-popup .text-slate-900,
+html.dark-mode .leaflet-popup .text-slate-800,
+html.dark .leaflet-popup .text-slate-800 {
+  color: #f8fafc !important;
+}
+
+html.dark-mode .leaflet-popup .text-slate-700,
+html.dark .leaflet-popup .text-slate-700,
+html.dark-mode .leaflet-popup .text-slate-600,
+html.dark .leaflet-popup .text-slate-600 {
+  color: #cbd5e1 !important;
+}
+
+html.dark-mode .leaflet-popup .border-slate-200,
+html.dark .leaflet-popup .border-slate-200 {
+  border-color: #334155 !important;
+}
+
+html.dark-mode .leaflet-popup .bg-slate-50,
+html.dark .leaflet-popup .bg-slate-50 {
+  background-color: #1e293b !important;
+}
+
+html.dark-mode .leaflet-popup .bg-slate-100,
+html.dark .leaflet-popup .bg-slate-100 {
+  background-color: #334155 !important;
+  color: #e2e8f0 !important;
+}

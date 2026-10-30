@@ -32,6 +32,7 @@ const MODULE_TITLES: Record<string, string> = {
   notifications: 'Broadcast Notifications',
   banners: 'Promotional Banners',
   settings: 'System Settings',
+  cross_connection: 'Cross Connection & Route Overlap',
 };
 
 export const RolesPage: React.FC<RolesPageProps> = ({ onNotify }) => {

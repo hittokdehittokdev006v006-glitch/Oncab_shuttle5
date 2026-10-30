@@ -386,6 +386,12 @@ const PackagePurchasesPage = React.lazy(() =>
   }))
 );
 
+const CrossConnectionPage = React.lazy(() =>
+  import('./pages/CrossConnectionPage').then(m => ({
+    default: m.CrossConnectionPage
+  }))
+);
+
 const PageWrapper = ({ children }: { children: React.ReactNode }) => (
   <React.Suspense fallback={<LoadingState />}>
     {children}
@@ -438,6 +444,7 @@ const VALID_VIEWS: View[] = [
   'routes',
   'stops',
   'trips',
+  'cross-connection',
   'locations',
   'driver-location-history',
   'rate-charts',
@@ -468,6 +475,7 @@ const VIEW_PERMISSIONS: Partial<Record<View, string>> = {
   users: 'users.read', roles: 'roles.read', drivers: 'drivers.read',
   vehicles: 'vehicles.read', 'vehicle-docs': 'vehicles.read', routes: 'routes.read',
   stops: 'stops.read', trips: 'trips.read', 'scheduled-trips': 'schedules.read',
+  'cross-connection': 'cross_connection.view',
   locations: 'locations.read',
   'driver-location-history': 'locations.read',
   'rate-charts': 'rates.read',
@@ -753,6 +761,13 @@ const AppInner: React.FC = () => {
         return (
           <PageWrapper>
             <TripsPage {...props} />
+          </PageWrapper>
+        );
+
+      case 'cross-connection':
+        return (
+          <PageWrapper>
+            <CrossConnectionPage {...props} />
           </PageWrapper>
         );
 

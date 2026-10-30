@@ -230,6 +230,7 @@ const seedDatabase = async () => {
       { key: 'cancellation_fee_percentage', value: '10', group: 'booking' },
       { key: 'allow_cancellation_hours', value: '2', group: 'booking' },
       { key: 'max_advance_booking_days', value: '30', group: 'booking' },
+      { key: 'trip_completion_radius_meters', value: '150', group: 'booking' },
       { key: 'payment_gateway', value: 'payu', group: 'payment' },
       { key: 'refund_admin_approval_required', value: 'true', group: 'refund' },
       { key: 'sms_gateway_enabled', value: 'true', group: 'notifications' },

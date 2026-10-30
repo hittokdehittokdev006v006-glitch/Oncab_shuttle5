@@ -4,7 +4,7 @@ import {
   CalendarDays, Ticket, UserCheck, Bus, Package, FileX, RefreshCcw,
   CreditCard, Bell, BarChart3, ClipboardList, Settings, ChevronDown,
   BusFront, X, LogOut, ChevronRight, ChevronLeft, Tag, Loader2, Image,
-  History, Webhook, FileCheck, Banknote
+  History, Webhook, FileCheck, Banknote, GitMerge
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -13,6 +13,7 @@ export type View =
   | 'dashboard' | 'users' | 'roles' | 'drivers' | 'vehicles' | 'vehicle-docs'
   | 'routes' | 'stops' | 'trips' | 'scheduled-trips'
   | 'locations' | 'driver-location-history'
+  | 'cross-connection'
   | 'rate-charts'
   | 'packages' | 'package-purchases'
   | 'passengers' | 'bookings' | 'passes' | 'cancelled-tickets' | 'refunds'
@@ -64,6 +65,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'stops', label: 'Stops & Stations', icon: MapPin, permission: 'routes.read' },
       { id: 'trips', label: 'Trips', icon: Bus, permission: 'trips.read' },
       { id: 'scheduled-trips', label: 'Scheduled Trips', icon: CalendarDays, permission: 'schedules.read' },
+      { id: 'cross-connection', label: 'Cross Connection', icon: GitMerge, permission: 'cross_connection.view' },
       { id: 'locations', label: 'Live Location', icon: MapPin, permission: 'locations.read' },
       { id: 'driver-location-history', label: 'Driver Location History', icon: History, permission: 'locations.read' },
       { id: 'rate-charts', label: 'Rate Charts', icon: CreditCard, permission: 'rates.read' },

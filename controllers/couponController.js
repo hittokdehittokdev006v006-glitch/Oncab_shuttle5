@@ -1,7 +1,9 @@
 'use strict';
 
 const { Op } = require('sequelize');
-const { Coupon, CouponUsage, CustomerUser, Booking, Trip } = require('../models');
+const { Coupon, CouponUsage, CustomerUser, Booking, Trip, Payment, Refund, sequelize } = require('../models');
+const { releaseBookingReservation } = require('../services/packagePurchaseService');
+const { logAction } = require('../middleware/auditLog');
 const { calculateCouponDiscount } = require('../utils/coupon');
 const { cleanCompletedTripCouponUsagesForPassenger } = require('../services/couponReleaseService');
 
@@ -57,7 +59,7 @@ exports.listAvailable = async (req, res, next) => {
     const today = new Date().toISOString().slice(0, 10);
     const coupons = await Coupon.findAll({
       where: {
-        status: 'Active',
+        [Op.or]: [{ status: 'Active' }, { status: 'active' }, { status: 'ACTIVE' }],
         [Op.and]: [
           { [Op.or]: [{ start_date: null }, { start_date: { [Op.lte]: today } }] },
           { [Op.or]: [{ end_date: null }, { end_date: { [Op.gte]: today } }] },
@@ -136,23 +138,288 @@ exports.update = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-exports.destroy = async (req, res, next) => {
+const cancelBookingRecord = async ({ booking, reason, adminUser, transaction, reqIp }) => {
+  const wasSeatAllocated = booking.booking_status === 'confirmed' && booking.payment_status === 'paid';
+  const now = new Date();
+
+  await booking.update({
+    booking_status: 'cancelled',
+    status: 'Cancelled',
+    cancellation_reason: reason,
+    cancelled_at: now,
+    cancelled_by: adminUser?.id || null,
+    coupon_id: null,
+  }, { transaction });
+
+  await releaseBookingReservation({ bookingId: booking.id, transaction });
+
+  if (booking.trip_id && wasSeatAllocated) {
+    const trip = await Trip.findByPk(booking.trip_id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (trip) {
+      const seatsToFree = Number(booking.total_seats || 1);
+      await trip.update({
+        booked_seats: Math.max(0, Number(trip.booked_seats || 0) - seatsToFree),
+      }, { transaction });
+    }
+  }
+
+  let refundRecord = null;
+  if (booking.payment_status === 'paid' && Number(booking.final_amount) > 0) {
+    const passenger = booking.passenger_id
+      ? await CustomerUser.findByPk(booking.passenger_id, { transaction })
+      : await CustomerUser.findOne({ where: { mobile: booking.passenger_mobile }, transaction });
+
+    const payment = await Payment.findOne({
+      where: { booking_id: booking.id, status: ['captured', 'partial_refund'] },
+      order: [['created_at', 'DESC']],
+      transaction,
+    });
+
+    const refundReference = `REF-${Date.now()}-${booking.id}`;
+    refundRecord = await Refund.create({
+      booking_id: booking.id,
+      payment_id: payment?.id || null,
+      passenger_id: passenger?.id || booking.passenger_id,
+      refund_reference: refundReference,
+      refund_amount: booking.final_amount,
+      refund_reason: reason,
+      status: 'pending',
+      initiated_by: adminUser?.id || null,
+    }, { transaction });
+  }
+
   try {
-    const coupon = await Coupon.findByPk(req.params.id);
-    if (!coupon) return res.status(404).json({ success: false, message: 'Coupon not found' });
-    await coupon.destroy();
-    res.json({ success: true, message: 'Coupon deleted' });
-  } catch (err) { next(err); }
+    await logAction({
+      userId: adminUser?.id,
+      userType: adminUser?.role?.name,
+      userName: adminUser?.name,
+      action: 'cancel',
+      module: 'bookings',
+      entityType: 'Booking',
+      entityId: booking.id,
+      newValues: {
+        booking_status: 'cancelled',
+        cancellation_reason: reason,
+      },
+      ipAddress: reqIp,
+      description: `Auto-cancelled booking ${booking.booking_reference}: ${reason}`,
+    });
+  } catch (logErr) {
+    console.warn('[cancelBookingRecord] Audit log warning:', logErr.message);
+  }
+
+  return {
+    id: booking.id,
+    booking_reference: booking.booking_reference,
+    passenger_name: booking.passenger_name,
+    passenger_mobile: booking.passenger_mobile,
+    refund_created: !!refundRecord,
+    refund_amount: refundRecord?.refund_amount || null,
+  };
+};
+
+exports.destroy = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const coupon = await Coupon.findByPk(req.params.id, { transaction: t });
+    if (!coupon) {
+      await t.rollback();
+      return res.status(404).json({ success: false, message: 'Coupon not found' });
+    }
+
+    // 1. Find all usages to get associated booking IDs and user IDs
+    const usages = await CouponUsage.findAll({
+      where: { coupon_id: coupon.id },
+      transaction: t,
+    });
+    const usageBookingIds = usages.map((u) => u.booking_id).filter(Boolean);
+
+    // 2. Find all active bookings that used this coupon
+    const activeBookings = await Booking.findAll({
+      where: {
+        [Op.or]: [
+          { coupon_id: coupon.id },
+          ...(usageBookingIds.length ? [{ id: { [Op.in]: usageBookingIds } }] : []),
+        ],
+        booking_status: { [Op.notIn]: ['cancelled', 'completed'] },
+      },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    const cancellationReason = `Coupon ${coupon.code} was deleted by admin`;
+    const cancelledBookings = [];
+
+    for (const booking of activeBookings) {
+      const info = await cancelBookingRecord({
+        booking,
+        reason: cancellationReason,
+        adminUser: req.user,
+        transaction: t,
+        reqIp: req.ip,
+      });
+      cancelledBookings.push(info);
+    }
+
+    // 3. Also clear coupon_id reference from any non-active bookings (completed/cancelled) using this coupon
+    await Booking.update({ coupon_id: null }, { where: { coupon_id: coupon.id }, transaction: t });
+
+    // 4. Delete all associated coupon_usages from database
+    await CouponUsage.destroy({ where: { coupon_id: coupon.id }, force: true, transaction: t });
+
+    // 5. Delete the coupon itself
+    await coupon.destroy({ force: true, transaction: t });
+
+    await t.commit();
+
+    try {
+      await logAction({
+        userId: req.user?.id,
+        userType: req.user?.role?.name,
+        userName: req.user?.name,
+        action: 'delete',
+        module: 'coupons',
+        entityType: 'Coupon',
+        entityId: coupon.id,
+        oldValues: { code: coupon.code, amount: coupon.amount },
+        ipAddress: req.ip,
+        description: `Deleted coupon ${coupon.code} and auto-cancelled ${cancelledBookings.length} active booking(s)`,
+      });
+    } catch (logErr) {
+      console.warn('[couponController.destroy] Coupon audit log warning:', logErr.message);
+    }
+
+    res.json({
+      success: true,
+      message: `Coupon ${coupon.code} deleted successfully. ${cancelledBookings.length} active booking(s) using this coupon were automatically cancelled.`,
+      data: {
+        cancelled_bookings_count: cancelledBookings.length,
+        cancelled_bookings: cancelledBookings,
+      },
+    });
+  } catch (err) {
+    if (!t.finished) await t.rollback();
+    next(err);
+  }
+};
+
+exports.deleteUsage = async (req, res, next) => {
+  const t = await sequelize.transaction();
+  try {
+    const usage = await CouponUsage.findByPk(req.params.usageId, { transaction: t });
+    if (!usage) {
+      await t.rollback();
+      return res.status(404).json({ success: false, message: 'Coupon usage record not found' });
+    }
+
+    const couponId = usage.coupon_id;
+    const coupon = await Coupon.findByPk(couponId, { transaction: t });
+    const couponCode = coupon?.code || `ID #${couponId}`;
+
+    // Find active booking(s) for this user that used this coupon
+    const bookingConditions = [];
+    if (usage.booking_id) {
+      bookingConditions.push({ id: usage.booking_id });
+    }
+    if (usage.passenger_id) {
+      bookingConditions.push({
+        passenger_id: usage.passenger_id,
+        coupon_id: couponId,
+      });
+    }
+
+    const activeBookings = bookingConditions.length > 0
+      ? await Booking.findAll({
+          where: {
+            [Op.or]: bookingConditions,
+            booking_status: { [Op.notIn]: ['cancelled', 'completed'] },
+          },
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        })
+      : [];
+
+    const cancellationReason = `Coupon usage for ${couponCode} was deleted by admin`;
+    const cancelledBookings = [];
+
+    for (const booking of activeBookings) {
+      const info = await cancelBookingRecord({
+        booking,
+        reason: cancellationReason,
+        adminUser: req.user,
+        transaction: t,
+        reqIp: req.ip,
+      });
+      cancelledBookings.push(info);
+    }
+
+    // Clear coupon_id if this specific booking still has it
+    if (usage.booking_id) {
+      await Booking.update({ coupon_id: null }, { where: { id: usage.booking_id }, transaction: t });
+    }
+
+    // Delete this usage record
+    await usage.destroy({ force: true, transaction: t });
+
+    // Decrement coupon used_count or recalculate accurate remaining count
+    const remainingCount = await CouponUsage.count({ where: { coupon_id: couponId }, transaction: t });
+    if (coupon) {
+      await coupon.update({ used_count: remainingCount }, { transaction: t });
+    }
+
+    await t.commit();
+
+    try {
+      await logAction({
+        userId: req.user?.id,
+        userType: req.user?.role?.name,
+        userName: req.user?.name,
+        action: 'delete_usage',
+        module: 'coupons',
+        entityType: 'CouponUsage',
+        entityId: usage.id,
+        oldValues: { coupon_id: couponId, passenger_id: usage.passenger_id, booking_id: usage.booking_id },
+        ipAddress: req.ip,
+        description: `Deleted coupon usage #${usage.id} for passenger ${usage.passenger_id} and auto-cancelled ${cancelledBookings.length} active booking(s)`,
+      });
+    } catch (logErr) {
+      console.warn('[couponController.deleteUsage] Audit log warning:', logErr.message);
+    }
+
+    const message = cancelledBookings.length > 0
+      ? `Coupon usage deleted successfully and ${cancelledBookings.length} active booking(s) for this user were automatically cancelled.`
+      : 'Coupon usage deleted successfully and used count updated.';
+
+    res.json({
+      success: true,
+      message,
+      data: {
+        remaining_used_count: remainingCount,
+        cancelled_bookings_count: cancelledBookings.length,
+        cancelled_bookings: cancelledBookings,
+      },
+    });
+  } catch (err) {
+    if (!t.finished) await t.rollback();
+    next(err);
+  }
 };
 
 exports.validate = async (req, res, next) => {
   try {
-    const { code, amount, passenger_id, device_id } = req.body;
+    const { code, amount, passenger_id, device_id, passenger_mobile, mobile } = req.body;
     const seatCount = Number(req.body.seat_count || 1);
     if (!Number.isInteger(seatCount) || seatCount < 1) {
       return res.status(400).json({ success: false, message: 'seat_count must be a positive integer' });
     }
-    const result = await calculateCouponDiscount({ couponCode: code, amount, seatCount, passengerId: passenger_id, deviceId: device_id });
+    const result = await calculateCouponDiscount({
+      couponCode: code,
+      amount,
+      seatCount,
+      passengerId: passenger_id,
+      passengerMobile: passenger_mobile || mobile,
+      deviceId: device_id,
+    });
     if (result.error) return res.status(400).json({ success: false, message: result.error });
     res.json({ success: true, message: 'Valid coupon', data: { coupon: result.coupon, discount: result.discount.toFixed(2), final_amount: (Number(amount) - result.discount).toFixed(2) } });
   } catch (err) { next(err); }
@@ -163,12 +430,27 @@ exports.usages = async (req, res, next) => {
     const coupon = await Coupon.findByPk(req.params.id);
     if (!coupon) return res.status(404).json({ success: false, message: 'Coupon not found' });
     const { offset, limit, page } = buildPagination(req.query.page, req.query.limit);
+    const search = req.query.search ? String(req.query.search).trim() : '';
+
+    const where = { coupon_id: coupon.id };
+    if (search) {
+      where[Op.or] = [
+        { '$passenger.name$': { [Op.like]: `%${search}%` } },
+        { '$passenger.mobile$': { [Op.like]: `%${search}%` } },
+        { '$booking.passenger_name$': { [Op.like]: `%${search}%` } },
+        { '$booking.passenger_mobile$': { [Op.like]: `%${search}%` } },
+        { '$booking.booking_reference$': { [Op.like]: `%${search}%` } },
+        { device_id: { [Op.like]: `%${search}%` } },
+      ];
+    }
+
     const { count, rows } = await CouponUsage.findAndCountAll({
-      where: { coupon_id: coupon.id },
+      where,
       include: [
-        { model: CustomerUser, as: 'passenger', attributes: ['id', 'name', 'mobile', 'email'] },
-        { model: Booking, as: 'booking', attributes: ['id', 'booking_reference', 'travel_date', 'booking_status', 'payment_status'] },
+        { model: CustomerUser, as: 'passenger', attributes: ['id', 'name', 'mobile', 'email'], required: false },
+        { model: Booking, as: 'booking', attributes: ['id', 'booking_reference', 'passenger_name', 'passenger_mobile', 'travel_date', 'booking_status', 'payment_status'], required: false },
       ],
+      distinct: true,
       offset,
       limit,
       order: [['created_at', 'DESC']],

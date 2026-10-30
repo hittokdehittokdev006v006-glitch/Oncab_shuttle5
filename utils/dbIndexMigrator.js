@@ -526,6 +526,13 @@ const ensureDefaultPermissions = async () => {
       // Settings
       ['settings.read', 'View System Settings', 'settings', 'read', 'View application configuration'],
       ['settings.manage', 'Manage System Settings', 'settings', 'manage', 'Update system-wide settings and parameters'],
+
+      // Cross Connection
+      ['cross_connection.view', 'View Cross Connection', 'cross_connection', 'read', 'View the Cross Connection page and records'],
+      ['cross_connection.view_details', 'View Cross Connection Details', 'cross_connection', 'read', 'View detailed trip and vehicle information for cross connections'],
+      ['cross_connection.configure', 'Configure Cross Connection Thresholds', 'cross_connection', 'manage', 'Change distance, time thresholds and matching frequency'],
+      ['cross_connection.export', 'Export Cross Connection Data', 'cross_connection', 'manage', 'Export cross-connection data records'],
+      ['cross_connection.manage', 'Manage Cross Connection', 'cross_connection', 'manage', 'Manage matching settings, recalculate, and update records'],
     ];
 
     const valuesClause = permissions.map(
@@ -572,7 +579,8 @@ const ensureDefaultPermissions = async () => {
       'banners.read',
       'owner_requests.read', 'owner_requests.manage',
       'owner_kyc.read', 'owner_kyc.manage',
-      'settlements.read', 'settlements.create'
+      'settlements.read', 'settlements.create',
+      'cross_connection.view', 'cross_connection.view_details'
     ];
 
     const escapedOwnerPerms = ownerPermNames.map((p) => sequelize.escape(p)).join(',');
@@ -591,6 +599,84 @@ const ensureDefaultPermissions = async () => {
   }
 };
 
+
+
+const ensureAdminSessionsTable = async () => {
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS \`admin_sessions\` (
+        \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        \`user_id\` INT UNSIGNED NOT NULL,
+        \`session_token\` VARCHAR(255) NOT NULL,
+        \`refresh_token\` TEXT DEFAULT NULL,
+        \`device_type\` VARCHAR(50) DEFAULT 'desktop',
+        \`device_name\` VARCHAR(150) DEFAULT 'Unknown Device',
+        \`browser\` VARCHAR(100) DEFAULT 'Unknown Browser',
+        \`os\` VARCHAR(100) DEFAULT 'Unknown OS',
+        \`screen_resolution\` VARCHAR(60) DEFAULT NULL,
+        \`color_depth\` VARCHAR(30) DEFAULT NULL,
+        \`pixel_ratio\` VARCHAR(20) DEFAULT NULL,
+        \`ip_address\` VARCHAR(64) DEFAULT NULL,
+        \`user_agent\` TEXT DEFAULT NULL,
+        \`is_active\` TINYINT(1) DEFAULT 1,
+        \`last_activity_at\` DATETIME NOT NULL,
+        \`created_at\` DATETIME NOT NULL,
+        \`updated_at\` DATETIME NOT NULL,
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`uniq_session_token\` (\`session_token\`),
+        KEY \`idx_user_active\` (\`user_id\`, \`is_active\`),
+        KEY \`idx_last_activity\` (\`last_activity_at\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
+    console.log('✅ admin_sessions table initialized');
+  } catch (err) {
+    console.error('ensureAdminSessionsTable error:', err.message);
+  }
+};
+
+const ensureCrossConnectionsTable = async () => {
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS \`cross_connections\` (
+        \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        \`connection_code\` VARCHAR(50) NOT NULL,
+        \`trip1_id\` INT UNSIGNED NOT NULL,
+        \`trip2_id\` INT UNSIGNED NOT NULL,
+        \`vehicle1_id\` INT UNSIGNED DEFAULT NULL,
+        \`vehicle2_id\` INT UNSIGNED DEFAULT NULL,
+        \`driver1_id\` INT UNSIGNED DEFAULT NULL,
+        \`driver2_id\` INT UNSIGNED DEFAULT NULL,
+        \`route_type1\` VARCHAR(50) DEFAULT 'Regular',
+        \`route_type2\` VARCHAR(50) DEFAULT 'Regular',
+        \`current_distance_meters\` DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+        \`min_distance_meters\` DECIMAL(10, 2) DEFAULT NULL,
+        \`overlap_duration_seconds\` INT UNSIGNED NOT NULL DEFAULT 0,
+        \`overlap_started_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        \`last_overlap_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        \`shared_segment_name\` VARCHAR(255) DEFAULT NULL,
+        \`shared_segment_details\` JSON DEFAULT NULL,
+        \`status\` ENUM('Active', 'Completed', 'No Longer Matching')
+          NOT NULL DEFAULT 'Active',
+        \`notes\` TEXT DEFAULT NULL,
+        \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+          ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (\`id\`),
+        UNIQUE KEY \`uniq_connection_code\` (\`connection_code\`),
+        KEY \`idx_cross_trip1\` (\`trip1_id\`),
+        KEY \`idx_cross_trip2\` (\`trip2_id\`),
+        KEY \`idx_cross_status\` (\`status\`),
+        KEY \`idx_cross_last_overlap\` (\`last_overlap_at\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
+    console.log('✅ cross_connections table initialized');
+  } catch (err) {
+    console.error('ensureCrossConnectionsTable error:', err.message);
+  }
+};
+
 module.exports = {
   ensureTripsIndex,
   ensureTripLocationsTable,
@@ -601,4 +687,7 @@ module.exports = {
   ensureBookingPackageColumns,
   ensurePassengerPackageTables,
   ensureDefaultPermissions,
+  ensureAdminSessionsTable,
+  ensureCrossConnectionsTable,
 };
+

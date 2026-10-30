@@ -72,13 +72,18 @@ export default api;
 
 // ── Typed API Helpers ──────────────────────────────────────
 export const authAPI = {
-  login: (email: string, password: string) => api.post('/auth/login', { email, password }),
+  login: (email: string, password: string, deviceInfo?: object) =>
+    api.post('/auth/login', { email, password, device_info: deviceInfo }),
   logout: () => api.post('/auth/logout'),
   me: () => api.get('/auth/me'),
   forgotPassword: (email: string) => api.post('/auth/forgot-password', { email }),
   resetPassword: (token: string, password: string) => api.post('/auth/reset-password', { token, password }),
-  changePassword: (currentPassword: string, newPassword: string) => api.post('/auth/change-password', { currentPassword, newPassword }),
+  changePassword: (currentPassword: string, newPassword: string, logoutOtherDevices: boolean = true) =>
+    api.post('/auth/change-password', { currentPassword, newPassword, logoutOtherDevices }),
   refreshToken: (refreshToken: string) => api.post('/auth/refresh-token', { refreshToken }),
+  getSessions: () => api.get('/auth/sessions'),
+  revokeSession: (id: number | string) => api.delete(`/auth/sessions/${id}`),
+  revokeOtherSessions: () => api.post('/auth/sessions/revoke-others'),
 };
 
 export const dashboardAPI = {
@@ -172,11 +177,19 @@ export const tripsAPI = {
   create: (data: object) => api.post('/trips', data),
   update: (id: number, data: object) => api.put(`/trips/${id}`, data),
   delete: (id: number) => api.delete(`/trips/${id}`),
-  updateStatus: (id: number, status: string) => api.patch(`/trips/${id}/status`, { status }),
+  updateStatus: (id: number, status: string, data?: object) => api.patch(`/trips/${id}/status`, { status, ...(data || {}) }),
   assignDriver: (id: number, driver_id: number) => api.patch(`/trips/${id}/assign-driver`, { driver_id }),
   assignVehicle: (id: number, vehicle_id: number) => api.patch(`/trips/${id}/assign-vehicle`, { vehicle_id }),
   assignRoute: (id: number, route_id: number) => api.patch(`/trips/${id}/assign-route`, { route_id }),
   generateFuture: (data?: object) => api.post('/trips/generate-future', data || {}),
+  copyTrips: (data: object) => api.post('/trips/copy-trips', data),
+};
+
+export const driverAppAPI = {
+  completeTrip: (id: number, data?: object) => api.post(`/bus-driver/trips/${id}/complete`, data || {}),
+  checkCompletionEligibility: (id: number, params?: object) => api.get(`/bus-driver/trips/${id}/completion-eligibility`, { params }),
+  updateLocation: (data: object) => api.post('/bus-driver/location/update', data),
+  getRouteMap: (id: number) => api.get(`/bus-driver/trips/${id}/route-map`),
 };
 
 export const ownerApprovalAPI = {
@@ -340,6 +353,7 @@ export const couponsAPI = {
   create: (data: object) => api.post('/coupons', data),
   update: (id: number, data: object) => api.put(`/coupons/${id}`, data),
   delete: (id: number) => api.delete(`/coupons/${id}`),
+  deleteUsage: (couponId: number, usageId: number) => api.delete(`/coupons/${couponId}/usages/${usageId}`),
   validate: (code: string, amount: number) => api.post('/coupons/validate', { code, amount }),
 };
 
@@ -383,3 +397,13 @@ export const bannersAPI = {
   reorder: (items: { id: number; display_order: number }[]) => api.patch('/banners/reorder', { items }),
   trackClick: (id: number) => api.post(`/banners/${id}/click`),
 };
+
+export const crossConnectionsAPI = {
+  list: (params?: object) => api.get('/cross-connections', { params }),
+  show: (id: number | string) => api.get(`/cross-connections/${id}`),
+  getConfig: () => api.get('/cross-connections/config'),
+  updateConfig: (data: object) => api.put('/cross-connections/config', data),
+  evaluate: () => api.post('/cross-connections/evaluate'),
+  export: (params?: object) => api.get('/cross-connections/export', { params, responseType: 'blob' }),
+};
+

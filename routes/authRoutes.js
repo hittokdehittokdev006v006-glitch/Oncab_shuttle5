@@ -20,7 +20,7 @@ const forgotPasswordValidation = [
 ];
 
 const resetPasswordValidation = [
-  body('token').notEmpty().withMessage('Reset token required'),
+  body('token').notEmpty().withMessage('Verification code or reset token required'),
   body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
   handleValidationErrors,
 ];
@@ -31,7 +31,7 @@ const changePasswordValidation = [
   handleValidationErrors,
 ];
 
-// ── Routes ─────────────────────────────────────────────────
+// ── Authentication & Password Routes ───────────────────────
 router.post('/login', loginValidation, authController.login);
 router.post('/refresh-token', authController.refreshToken);
 router.post('/logout', authenticate, authController.logout);
@@ -39,5 +39,11 @@ router.get('/me', authenticate, authController.me);
 router.post('/forgot-password', forgotPasswordValidation, authController.forgotPassword);
 router.post('/reset-password', resetPasswordValidation, authController.resetPassword);
 router.post('/change-password', authenticate, changePasswordValidation, authController.changePassword);
+
+// ── Active Sessions & Logged-in Devices Tracking ───────────
+router.get('/sessions', authenticate, authController.listSessions);
+router.delete('/sessions/:id', authenticate, authController.revokeSession);
+router.post('/sessions/:id/revoke', authenticate, authController.revokeSession);
+router.post('/sessions/revoke-others', authenticate, authController.revokeOtherSessions);
 
 module.exports = router;

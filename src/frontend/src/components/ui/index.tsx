@@ -323,7 +323,7 @@ interface ModalProps {
   open?: boolean;
   isOpen?: boolean;
   onClose: () => void;
-  title: string;
+  title: React.ReactNode;
   children: React.ReactNode;
   footer?: React.ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl';
@@ -373,10 +373,11 @@ interface InputProps {
   placeholder?: string;
   required?: boolean;
   error?: string;
+  helperText?: string;
   disabled?: boolean;
   className?: string;
 }
-export const Input: React.FC<InputProps> = ({ label, type = 'text', min, max, step, value, onChange, placeholder, required, error, disabled, className = '' }) => (
+export const Input: React.FC<InputProps> = ({ label, type = 'text', min, max, step, value, onChange, placeholder, required, error, helperText, disabled, className = '' }) => (
   <div className={`space-y-1.5 ${className}`}>
     {label && (
       <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
@@ -388,8 +389,12 @@ export const Input: React.FC<InputProps> = ({ label, type = 'text', min, max, st
       min={min}
       max={max}
       step={step}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
+      value={value ?? ''}
+      onChange={(e) => {
+        if (typeof onChange === 'function') {
+          onChange(e.target.value);
+        }
+      }}
       placeholder={placeholder}
       required={required}
       disabled={disabled}
@@ -399,6 +404,7 @@ export const Input: React.FC<InputProps> = ({ label, type = 'text', min, max, st
         disabled ? 'opacity-50 cursor-not-allowed' : ''
       }`}
     />
+    {helperText && !error && <p className="text-[11px] text-slate-400">{helperText}</p>}
     {error && <p className="text-xs text-rose-500">{error}</p>}
   </div>
 );

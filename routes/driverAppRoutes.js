@@ -49,6 +49,7 @@ router.post('/trips/:id/stops/:stopId/mark-no-show', driverAppController.markNoS
 router.post('/trips/:id/start', driverAppController.startTrip);
 router.post('/start-trip', busDriverAssignmentController.startTrip); // Assignment workflow compatibility
 
+router.get('/trips/:id/completion-eligibility', driverAppController.checkCompletionEligibility);
 router.post('/trips/:id/complete', driverAppController.completeTrip);
 router.post('/complete-trip', busDriverAssignmentController.completeTrip); // Assignment workflow compatibility
 

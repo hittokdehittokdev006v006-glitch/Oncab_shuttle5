@@ -6,6 +6,7 @@ const { Driver, DriverDetail, Trip, Route, Stop, RouteStop, Vehicle, Booking, Pa
 const { saveOtp, verifyOtp: verifySmsOtp, sendFast2SMSOtp } = require('../services/smsService');
 const { releaseUnusedCouponOnTripCompletion } = require('../services/couponReleaseService');
 const { getOrderedStopsForRoute } = require('../utils/routeStops');
+const { COMPLETION_RADIUS_METERS, checkProximityToStop, calcHaversineDistanceMeters, getCompletionRadiusMeters } = require('../utils/geoUtils');
 const sequelize = require('../config/database');
 const { settleTripPackageRides } = require('../services/packagePurchaseService');
 
@@ -531,8 +532,10 @@ exports.startTrip = async (req, res, next) => {
 };
 
 /**
+/**
  * Complete Trip
  * POST /api/bus-driver/trips/:id/complete
+ * Enforces requirement: Driver must reach within 150 meters of the final stoppage/destination
  */
 exports.completeTrip = async (req, res, next) => {
   const transaction = await sequelize.transaction();
@@ -552,6 +555,84 @@ exports.completeTrip = async (req, res, next) => {
       return res.status(400).json({ status: 400, success: false, message: 'Trip is already completed' });
     }
 
+    // 1. Resolve Driver GPS Coordinates (from body, or live DriverDetail, or latest TripLocation breadcrumb)
+    const detail = await DriverDetail.findOne({ where: { driver_id: req.driver.id } });
+    const rawLat = req.body?.latitude != null ? req.body.latitude : detail?.latitude;
+    const rawLng = req.body?.longitude != null ? req.body.longitude : detail?.longitude;
+    let currLat = rawLat != null && rawLat !== '' ? Number(rawLat) : null;
+    let currLng = rawLng != null && rawLng !== '' ? Number(rawLng) : null;
+
+    if (currLat == null || currLng == null || !Number.isFinite(currLat) || !Number.isFinite(currLng)) {
+      const latestBreadcrumb = await TripLocation.findOne({
+        where: { trip_id: trip.id, driver_id: req.driver.id },
+        order: [['recorded_at', 'DESC'], ['id', 'DESC']],
+      });
+      if (latestBreadcrumb) {
+        currLat = Number(latestBreadcrumb.latitude);
+        currLng = Number(latestBreadcrumb.longitude);
+      }
+    }
+
+    // Handle GPS permission / availability issues gracefully
+    const hasValidCoords = currLat != null && currLng != null && Number.isFinite(currLat) && Number.isFinite(currLng)
+      && Math.abs(currLat) <= 90 && Math.abs(currLng) <= 180;
+
+    if (!hasValidCoords) {
+      await transaction.rollback();
+      return res.status(400).json({
+        status: 400,
+        success: false,
+        code: 'LOCATION_REQUIRED',
+        message: 'Live GPS location is required to verify distance to final destination. Please ensure location services are enabled.',
+      });
+    }
+
+    // 2. Resolve Final Stoppage / Destination Coordinates for this Route
+    const stops = trip.route_id ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time) : [];
+    const finalStop = stops && stops.length > 0 ? stops[stops.length - 1] : null;
+
+    let distanceMeters = null;
+    let proximityResult = null;
+
+    if (finalStop && finalStop.latitude != null && finalStop.longitude != null) {
+      const stopLat = Number(finalStop.latitude);
+      const stopLng = Number(finalStop.longitude);
+
+      if (Number.isFinite(stopLat) && Number.isFinite(stopLng)) {
+        const accuracy = req.body?.accuracy != null ? Number(req.body.accuracy) : null;
+        const allowedRadius = await getCompletionRadiusMeters();
+        proximityResult = checkProximityToStop(currLat, currLng, stopLat, stopLng, allowedRadius, accuracy);
+        distanceMeters = proximityResult.rawDistanceMeters;
+
+        if (!proximityResult.isWithin) {
+          await transaction.rollback();
+          return res.status(400).json({
+            status: 400,
+            success: false,
+            code: 'OUTSIDE_RADIUS',
+            message: `You must reach within ${allowedRadius} meters of the final destination to complete this trip.`,
+            data: {
+              distance_meters: distanceMeters,
+              effective_distance_meters: proximityResult.effectiveDistanceMeters,
+              allowed_radius_meters: allowedRadius,
+              accuracy_meters: accuracy,
+              final_stop: {
+                id: finalStop.id,
+                stop_name: finalStop.stop_name,
+                latitude: stopLat,
+                longitude: stopLng,
+              },
+              driver_location: {
+                latitude: currLat,
+                longitude: currLng,
+              },
+            },
+          });
+        }
+      }
+    }
+
+    // 3. Complete Trip
     await trip.update({
       status: 'Completed',
       completed_at: new Date(),
@@ -567,32 +648,23 @@ exports.completeTrip = async (req, res, next) => {
       console.warn('[Driver completeTrip] Error releasing unused coupons:', couponErr.message);
     }
 
-    // Check if final ending GPS coordinates were provided or exist in DriverDetail
-    const detail = await DriverDetail.findOne({ where: { driver_id: req.driver.id } });
-    const rawLat = req.body?.latitude != null ? req.body.latitude : detail?.latitude;
-    const rawLng = req.body?.longitude != null ? req.body.longitude : detail?.longitude;
-    const endLat = rawLat != null && rawLat !== '' ? Number(rawLat) : null;
-    const endLng = rawLng != null && rawLng !== '' ? Number(rawLng) : null;
-
+    // Record final ending GPS coordinates
     let finalLocation = null;
-    if (endLat != null && endLng != null && Number.isFinite(endLat) && Number.isFinite(endLng)
-        && Math.abs(endLat) <= 90 && Math.abs(endLng) <= 180) {
-      const rawSpeed = req.body?.speed != null ? req.body.speed : detail?.location_speed_kmh;
-      const rawHeading = req.body?.heading != null ? req.body.heading : detail?.location_heading;
-      const endSpeed = rawSpeed != null && rawSpeed !== '' && Number.isFinite(Number(rawSpeed)) ? Number(rawSpeed) : 0;
-      const endHeading = rawHeading != null && rawHeading !== '' && Number.isFinite(Number(rawHeading)) ? Number(rawHeading) : null;
+    const rawSpeed = req.body?.speed != null ? req.body.speed : detail?.location_speed_kmh;
+    const rawHeading = req.body?.heading != null ? req.body.heading : detail?.location_heading;
+    const endSpeed = rawSpeed != null && rawSpeed !== '' && Number.isFinite(Number(rawSpeed)) ? Number(rawSpeed) : 0;
+    const endHeading = rawHeading != null && rawHeading !== '' && Number.isFinite(Number(rawHeading)) ? Number(rawHeading) : null;
 
-      finalLocation = await TripLocation.create({
-        trip_id: trip.id,
-        driver_id: req.driver.id,
-        vehicle_id: trip.vehicle_id || null,
-        latitude: endLat,
-        longitude: endLng,
-        speed_kmh: endSpeed,
-        heading: endHeading,
-        recorded_at: new Date(),
-      });
-    }
+    finalLocation = await TripLocation.create({
+      trip_id: trip.id,
+      driver_id: req.driver.id,
+      vehicle_id: trip.vehicle_id || null,
+      latitude: currLat,
+      longitude: currLng,
+      speed_kmh: endSpeed,
+      heading: endHeading,
+      recorded_at: new Date(),
+    });
 
     if (detail && Number(detail.location_trip_id) === Number(trip.id)) {
       await detail.update({ location_trip_id: null });
@@ -606,11 +678,123 @@ exports.completeTrip = async (req, res, next) => {
         trip_id: trip.id,
         status: trip.status,
         completed_at: trip.completed_at,
+        distance_to_final_stop_meters: distanceMeters,
+        allowed_radius_meters: COMPLETION_RADIUS_METERS,
+        final_stop: finalStop ? {
+          id: finalStop.id,
+          stop_name: finalStop.stop_name,
+          latitude: finalStop.latitude,
+          longitude: finalStop.longitude,
+        } : null,
         final_location_recorded: Boolean(finalLocation),
       },
     });
   } catch (err) {
     if (!transaction.finished) await transaction.rollback();
+    next(err);
+  }
+};
+
+/**
+ * Check Driver Trip Completion Eligibility (Proximity to Final Stop)
+ * GET /api/bus-driver/trips/:id/completion-eligibility
+ */
+exports.checkCompletionEligibility = async (req, res, next) => {
+  try {
+    const tripId = req.params.id;
+    const trip = await Trip.findOne({
+      where: { id: tripId, driver_id: req.driver.id },
+      include: [{ model: Route, as: 'route' }],
+    });
+    if (!trip) {
+      return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found' });
+    }
+
+    const stops = trip.route_id ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time) : [];
+    const finalStop = stops && stops.length > 0 ? stops[stops.length - 1] : null;
+
+    const detail = await DriverDetail.findOne({ where: { driver_id: req.driver.id } });
+    const rawLat = req.query?.latitude != null ? req.query.latitude : detail?.latitude;
+    const rawLng = req.query?.longitude != null ? req.query.longitude : detail?.longitude;
+    const accuracy = req.query?.accuracy != null ? Number(req.query.accuracy) : null;
+
+    let currLat = rawLat != null && rawLat !== '' ? Number(rawLat) : null;
+    let currLng = rawLng != null && rawLng !== '' ? Number(rawLng) : null;
+
+    if (currLat == null || currLng == null) {
+      const latestPing = await TripLocation.findOne({
+        where: { trip_id: trip.id, driver_id: req.driver.id },
+        order: [['recorded_at', 'DESC'], ['id', 'DESC']],
+      });
+      if (latestPing) {
+        currLat = Number(latestPing.latitude);
+        currLng = Number(latestPing.longitude);
+      }
+    }
+
+    const allowedRadius = await getCompletionRadiusMeters();
+
+    if (!finalStop || finalStop.latitude == null || finalStop.longitude == null) {
+      return res.json({
+        status: 200,
+        success: true,
+        data: {
+          can_complete: true,
+          message: 'Final stop coordinates not set; proximity check bypassed',
+          distance_meters: 0,
+          allowed_radius_meters: allowedRadius,
+        },
+      });
+    }
+
+    if (currLat == null || currLng == null) {
+      return res.json({
+        status: 200,
+        success: true,
+        data: {
+          can_complete: false,
+          has_location: false,
+          message: 'Location permission denied or GPS unavailable. Please enable live GPS location.',
+          distance_meters: null,
+          allowed_radius_meters: allowedRadius,
+          final_stop: {
+            id: finalStop.id,
+            stop_name: finalStop.stop_name,
+            latitude: Number(finalStop.latitude),
+            longitude: Number(finalStop.longitude),
+          },
+        },
+      });
+    }
+
+    const proximity = checkProximityToStop(currLat, currLng, finalStop.latitude, finalStop.longitude, allowedRadius, accuracy);
+
+    return res.json({
+      status: 200,
+      success: true,
+      data: {
+        can_complete: proximity.isWithin,
+        has_location: true,
+        distance_meters: proximity.rawDistanceMeters,
+        effective_distance_meters: proximity.effectiveDistanceMeters,
+        allowed_radius_meters: allowedRadius,
+        accuracy_meters: accuracy,
+        final_stop: {
+          id: finalStop.id,
+          stop_name: finalStop.stop_name,
+          latitude: Number(finalStop.latitude),
+          longitude: Number(finalStop.longitude),
+        },
+        driver_location: {
+          latitude: currLat,
+          longitude: currLng,
+        },
+        message: proximity.isWithin
+          ? `You are within the ${allowedRadius}m destination radius. Trip completion is available.`
+          : `You must reach within ${allowedRadius} meters of the final destination to complete this trip.`,
+      },
+    });
+  } catch (err) {
     next(err);
   }
 };

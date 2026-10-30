@@ -423,6 +423,7 @@ export interface RidePackage {
 export type View =
   | 'scheduled-trips'
   | 'trips'
+  | 'cross-connection'
   | 'drivers'
   | 'vehicles'
   | 'packages'

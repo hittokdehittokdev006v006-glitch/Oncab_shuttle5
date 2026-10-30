@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus, Edit2, Trash2, Phone, Mail, MapPin, Upload, Image, CheckCircle2, X, Eye, FileText } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Plus, Edit2, Trash2, Phone, Mail, MapPin, Upload, Image, CheckCircle2, X, Eye, FileText, Users, UserCheck, Shield, Bus, Filter, RotateCcw } from 'lucide-react';
 import { driversAPI, rolesAPI, vehiclesAPI, usersAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, Table, Tr, Td, Pagination, SearchInput, Button, Select, StatusBadge, Modal, ConfirmDialog, LoadingState, ErrorState, EmptyState, Badge } from '../components/ui';
@@ -23,6 +23,12 @@ interface Driver {
   pan: string;
   address: string;
   owner_id?: number | null;
+  owner?: {
+    id: number;
+    name: string;
+    email: string;
+    phone?: string;
+  } | null;
   created_at: string;
   details?: any;
 }
@@ -31,12 +37,30 @@ interface DriversPageProps {
   onNotify: (msg: string, type?: any) => void;
 }
 
-const HEADERS = ['Driver', 'Mobile / Email', 'Aadhar / Driving License', 'Documents', 'Doc Status', 'Status', 'Online', 'Block', 'Joined', 'Actions'];
 const STATUS_OPTIONS = [
+  { value: '', label: 'All Statuses' },
   { value: 'Approve', label: 'Approved' },
   { value: 'Disapprove', label: 'Disapproved' },
   { value: 'Reject', label: 'Rejected' },
   { value: 'Pending', label: 'Pending' },
+];
+
+const ONLINE_OPTIONS = [
+  { value: '', label: 'All Online Status' },
+  { value: 'Online', label: 'Online' },
+  { value: 'Offline', label: 'Offline' },
+];
+
+const DOC_STATUS_OPTIONS = [
+  { value: '', label: 'All Doc Status' },
+  { value: 'Complete', label: 'Complete' },
+  { value: 'Incomplete', label: 'Incomplete' },
+];
+
+const DRIVER_TYPE_OPTIONS = [
+  { value: '', label: 'All Driver Types' },
+  { value: 'true', label: 'Bus Drivers Only' },
+  { value: 'false', label: 'Non-Bus Drivers' },
 ];
 
 export const DriversPage: React.FC<DriversPageProps> = ({ onNotify }) => {
@@ -45,6 +69,10 @@ export const DriversPage: React.FC<DriversPageProps> = ({ onNotify }) => {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [onlineFilter, setOnlineFilter] = useState('');
+  const [docFilter, setDocFilter] = useState('');
+  const [driverTypeFilter, setDriverTypeFilter] = useState('');
+  const [ownerFilter, setOwnerFilter] = useState('');
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState({ total: 0, pages: 1, limit: 15 });
   const [busTypes, setBusTypes] = useState<Array<{ id: number; name: string }>>([]);
@@ -88,7 +116,14 @@ export const DriversPage: React.FC<DriversPageProps> = ({ onNotify }) => {
     try {
       setLoading(true);
       setError('');
-      const resp = await driversAPI.list({ page, limit: 15, search, status: statusFilter });
+      const params: any = { page, limit: 15, search };
+      if (statusFilter) params.status = statusFilter;
+      if (onlineFilter) params.online_status = onlineFilter;
+      if (docFilter) params.complete_status = docFilter;
+      if (driverTypeFilter !== '') params.is_bus_driver = driverTypeFilter;
+      if (ownerFilter && !isOwner) params.owner_id = ownerFilter;
+
+      const resp = await driversAPI.list(params);
       if (fetchId !== latestFetchId.current) return;
       setDrivers(resp.data.data || []);
       setPagination(resp.data.pagination || { total: 0, pages: 1, limit: 15 });
@@ -98,7 +133,7 @@ export const DriversPage: React.FC<DriversPageProps> = ({ onNotify }) => {
     } finally {
       if (fetchId === latestFetchId.current) setLoading(false);
     }
-  }, [page, search, statusFilter]);
+  }, [page, search, statusFilter, onlineFilter, docFilter, driverTypeFilter, ownerFilter, isOwner]);
 
   useEffect(() => {
     fetchDrivers();
@@ -162,7 +197,50 @@ export const DriversPage: React.FC<DriversPageProps> = ({ onNotify }) => {
 
   useEffect(() => {
     setPage(1);
-  }, [search, statusFilter]);
+  }, [search, statusFilter, onlineFilter, docFilter, driverTypeFilter, ownerFilter]);
+
+  const activeFiltersCount = useMemo(() => {
+    let count = 0;
+    if (search) count++;
+    if (statusFilter) count++;
+    if (onlineFilter) count++;
+    if (docFilter) count++;
+    if (driverTypeFilter !== '') count++;
+    if (ownerFilter) count++;
+    return count;
+  }, [search, statusFilter, onlineFilter, docFilter, driverTypeFilter, ownerFilter]);
+
+  const resetFilters = () => {
+    setSearch('');
+    setStatusFilter('');
+    setOnlineFilter('');
+    setDocFilter('');
+    setDriverTypeFilter('');
+    setOwnerFilter('');
+    setPage(1);
+  };
+
+  const HEADERS = [
+    'Driver',
+    ...(!isOwner ? ['Owner'] : []),
+    'Mobile / Email',
+    'Aadhar / Driving License',
+    'Documents',
+    'Doc Status',
+    'Status',
+    'Online',
+    'Block',
+    'Joined',
+    'Actions',
+  ];
+
+  const ownerOptions = [
+    { value: '', label: 'All Owners' },
+    ...owners.map((o: any) => ({
+      value: String(o.id),
+      label: o.name + (o.phone ? ` (${o.phone})` : ''),
+    })),
+  ];
 
   const openCreate = () => {
     setEditDriver(null);
@@ -302,19 +380,138 @@ export const DriversPage: React.FC<DriversPageProps> = ({ onNotify }) => {
         </Button>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
-        <SearchInput
-          value={search}
-          onChange={setSearch}
-          placeholder="Search name, mobile, aadhar, Driving License, ID..."
-        />
-        <Select
-          value={statusFilter}
-          onChange={setStatusFilter}
-          options={STATUS_OPTIONS}
-          placeholder="All Statuses"
-        />
+      {/* KPI Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="rounded-xl border border-slate-700/60 bg-slate-850 p-3.5 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Total Drivers</span>
+            <span className="rounded-lg bg-indigo-500/10 p-1.5 text-indigo-400">
+              <Users size={15} />
+            </span>
+          </div>
+          <p className="mt-2 text-2xl font-bold text-white tracking-tight">{pagination.total}</p>
+          <p className="mt-0.5 text-xs text-slate-500">Matching criteria</p>
+        </div>
+
+        <div className="rounded-xl border border-slate-700/60 bg-slate-850 p-3.5 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Page Approved</span>
+            <span className="rounded-lg bg-emerald-500/10 p-1.5 text-emerald-400">
+              <UserCheck size={15} />
+            </span>
+          </div>
+          <p className="mt-2 text-2xl font-bold text-emerald-400 tracking-tight">
+            {drivers.filter(d => d.status === 'Approve').length}
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500">Approved in current view</p>
+        </div>
+
+        <div className="rounded-xl border border-slate-700/60 bg-slate-850 p-3.5 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Page Online</span>
+            <span className="rounded-lg bg-cyan-500/10 p-1.5 text-cyan-400">
+              <Shield size={15} />
+            </span>
+          </div>
+          <p className="mt-2 text-2xl font-bold text-cyan-400 tracking-tight">
+            {drivers.filter(d => d.online_status === 'Online').length}
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500">Currently active on duty</p>
+        </div>
+
+        <div className="rounded-xl border border-slate-700/60 bg-slate-850 p-3.5 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Bus Drivers</span>
+            <span className="rounded-lg bg-amber-500/10 p-1.5 text-amber-400">
+              <Bus size={15} />
+            </span>
+          </div>
+          <p className="mt-2 text-2xl font-bold text-amber-400 tracking-tight">
+            {drivers.filter(d => d.is_bus_driver).length}
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500">Designated bus operators</p>
+        </div>
+      </div>
+
+      {/* Advanced Multi-Dimensional Filter Bar */}
+      <div className="rounded-xl border border-slate-700/60 bg-slate-850/80 p-4 shadow-sm backdrop-blur-sm space-y-3">
+        <div className="flex items-center justify-between border-b border-slate-700/60 pb-2.5">
+          <div className="flex items-center gap-2">
+            <Filter size={15} className="text-indigo-400" />
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-300">Advanced Filters</span>
+            {activeFiltersCount > 0 && (
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                {activeFiltersCount} Active
+              </span>
+            )}
+          </div>
+          {activeFiltersCount > 0 && (
+            <button
+              onClick={resetFilters}
+              className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-indigo-400 transition-colors"
+            >
+              <RotateCcw size={12} />
+              Reset Filters
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="sm:col-span-2 lg:col-span-2">
+            <SearchInput
+              value={search}
+              onChange={setSearch}
+              placeholder="Search driver, mobile, aadhar, DL, ID..."
+            />
+          </div>
+
+          {!isOwner && (
+            <div>
+              <Select
+                value={ownerFilter}
+                onChange={setOwnerFilter}
+                options={ownerOptions}
+                placeholder="All Owners"
+              />
+            </div>
+          )}
+
+          <div>
+            <Select
+              value={statusFilter}
+              onChange={setStatusFilter}
+              options={STATUS_OPTIONS}
+              placeholder="Approval Status"
+            />
+          </div>
+
+          <div>
+            <Select
+              value={onlineFilter}
+              onChange={setOnlineFilter}
+              options={ONLINE_OPTIONS}
+              placeholder="Online Status"
+            />
+          </div>
+
+          <div>
+            <Select
+              value={docFilter}
+              onChange={setDocFilter}
+              options={DOC_STATUS_OPTIONS}
+              placeholder="Doc Status"
+            />
+          </div>
+
+          <div>
+            <Select
+              value={driverTypeFilter}
+              onChange={setDriverTypeFilter}
+              options={DRIVER_TYPE_OPTIONS}
+              placeholder="Driver Type"
+            />
+          </div>
+        </div>
       </div>
 
       {/* Table */}
@@ -344,13 +541,32 @@ export const DriversPage: React.FC<DriversPageProps> = ({ onNotify }) => {
                           {driver.name.charAt(0).toUpperCase()}
                         </div>
                         <div>
-                          <div className="text-white font-medium text-sm">{driver.name}</div>
+                          <div className="text-white font-medium text-sm flex items-center gap-1.5">
+                            <span>{driver.name}</span>
+                            {driver.is_bus_driver && (
+                              <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                Bus
+                              </span>
+                            )}
+                          </div>
                           <div className="text-slate-500 text-xs font-mono">
                             {driver.driver_user_id || `DRV-${driver.id}`} • {driver.sex || 'Male'}
                           </div>
                         </div>
                       </div>
                     </Td>
+                    {!isOwner && (
+                      <Td>
+                        {driver.owner ? (
+                          <div>
+                            <div className="text-white text-xs font-medium">{driver.owner.name}</div>
+                            <div className="text-slate-500 text-[11px] font-mono">{driver.owner.phone || driver.owner.email || '—'}</div>
+                          </div>
+                        ) : (
+                          <span className="text-slate-600 text-xs">—</span>
+                        )}
+                      </Td>
+                    )}
                     <Td>
                       <div className="space-y-0.5">
                         <div className="flex items-center gap-1.5 text-xs text-slate-300">

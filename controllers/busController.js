@@ -982,6 +982,7 @@ exports.calculateFare = async (req, res, next) => {
     const coupon_id = query.coupon_id || body.coupon_id;
     const coupon_code = query.coupon_code || body.coupon_code;
     const passenger_id = query.passenger_id || body.passenger_id;
+    const passenger_mobile = query.passenger_mobile || body.passenger_mobile || query.mobile || body.mobile;
     const device_id = query.device_id || body.device_id;
     if (!Number.isInteger(seat_count) || seat_count < 1) {
       return res.status(400).json({ status: 400, success: false, message: 'seat_count must be a positive integer' });
@@ -1049,6 +1050,7 @@ exports.calculateFare = async (req, res, next) => {
         amount: totalAmount,
         seatCount: seat_count,
         passengerId: passenger_id,
+        passengerMobile: passenger_mobile,
         deviceId: device_id,
       });
       if (couponResult.error) return res.status(400).json({ status: 400, success: false, message: couponResult.error });

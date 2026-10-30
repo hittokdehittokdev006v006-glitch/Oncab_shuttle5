@@ -1,16 +1,40 @@
 'use strict';
 
+const { Op } = require('sequelize');
 const { Coupon, CouponUsage } = require('../models');
 
 const getCoupon = async ({ couponId, couponCode, transaction, lock }) => {
   const options = { transaction };
   if (lock && transaction) options.lock = transaction.LOCK.UPDATE;
   if (couponId) return Coupon.findByPk(couponId, options);
-  if (couponCode) return Coupon.findOne({
-    ...options,
-    where: { code: String(couponCode).trim().toUpperCase() },
-  });
+  if (couponCode) {
+    const code = String(couponCode).trim();
+    if (!code) return null;
+    return Coupon.findOne({
+      ...options,
+      where: {
+        [Op.or]: [
+          { code },
+          { code: code.toUpperCase() },
+          { code: code.toLowerCase() },
+        ],
+      },
+    });
+  }
   return null;
+};
+
+const resolvePassengerId = async ({ passengerId, passengerMobile, mobile, transaction }) => {
+  if (passengerId) return Number(passengerId);
+  const rawMobile = passengerMobile ?? mobile;
+  if (!rawMobile) return null;
+  const { CustomerUser } = require('../models');
+  const customer = await CustomerUser.findOne({
+    where: { mobile: String(rawMobile).trim() },
+    transaction,
+    attributes: ['id'],
+  });
+  return customer ? Number(customer.id) : null;
 };
 
 const calculateCouponDiscount = async ({
@@ -19,13 +43,15 @@ const calculateCouponDiscount = async ({
   amount,
   seatCount = 1,
   passengerId,
+  passengerMobile,
+  mobile,
   deviceId,
   transaction,
   lock = false,
 }) => {
   const coupon = await getCoupon({ couponId, couponCode, transaction, lock });
   if (!coupon) return { error: 'Invalid coupon code' };
-  if (coupon.status !== 'Active') return { error: 'Coupon is not active' };
+  if (String(coupon.status || '').trim().toLowerCase() !== 'active') return { error: 'Coupon is not active' };
 
   const today = new Date().toISOString().slice(0, 10);
   if (coupon.start_date && today < coupon.start_date) return { error: 'Coupon is not active yet' };
@@ -43,11 +69,12 @@ const calculateCouponDiscount = async ({
     return { error: 'Coupon usage limit reached' };
   }
 
+  const resolvedPassengerId = await resolvePassengerId({ passengerId, passengerMobile, mobile, transaction });
   const usageWhere = { coupon_id: coupon.id };
-  if (passengerId) {
+  if (resolvedPassengerId) {
     try {
       const { cleanCompletedTripCouponUsagesForPassenger } = require('../services/couponReleaseService');
-      await cleanCompletedTripCouponUsagesForPassenger(passengerId, { transaction });
+      await cleanCompletedTripCouponUsagesForPassenger(resolvedPassengerId, { transaction });
     } catch (cleanErr) {
       // ignore
     }
@@ -55,7 +82,7 @@ const calculateCouponDiscount = async ({
     const userLimit = Number(coupon.per_user_limit);
     if (Number.isFinite(userLimit) && userLimit > 0) {
       const userCount = await CouponUsage.count({
-        where: { ...usageWhere, passenger_id: passengerId },
+        where: { ...usageWhere, passenger_id: resolvedPassengerId },
         transaction,
       });
       if (userCount >= userLimit) {
@@ -64,11 +91,10 @@ const calculateCouponDiscount = async ({
 
       // Prevent reuse if currently locked in an ongoing booking that is not completed
       const { Booking, Trip } = require('../models');
-      const { Op } = require('sequelize');
       const activeBooking = await Booking.findOne({
         where: {
           coupon_id: coupon.id,
-          passenger_id: passengerId,
+          passenger_id: resolvedPassengerId,
           booking_status: { [Op.ne]: 'cancelled' },
         },
         include: [{ model: Trip, as: 'trip', required: true }],
@@ -79,7 +105,7 @@ const calculateCouponDiscount = async ({
       }
     }
   } else if (Number(coupon.per_user_limit) > 0) {
-    return { error: 'A passenger_id is required to use this coupon' };
+    return { error: 'A passenger_id or passenger_mobile is required to use this coupon' };
   }
 
   if (coupon.per_device_limit !== null && coupon.per_device_limit !== undefined) {

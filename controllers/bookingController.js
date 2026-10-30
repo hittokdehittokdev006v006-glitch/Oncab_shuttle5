@@ -114,41 +114,153 @@ const BOOKING_INCLUDE = [
 // ── List Bookings ──────────────────────────────────────────
 exports.list = async (req, res, next) => {
   try {
-    const { page, limit, search, booking_status, payment_status, from_date, to_date, trip_id } = req.query;
+    let {
+      page,
+      limit,
+      search,
+      booking_status,
+      payment_status,
+      from_date,
+      to_date,
+      date,
+      trip_id,
+      route_id,
+      vehicle_id,
+      driver_id,
+    } = req.query;
+
     const { offset, limit: lim, page: p } = buildPagination(page, limit);
     const where = {};
-    if (search) where[Op.or] = [{ booking_reference: { [Op.like]: `%${search}%` } }, { passenger_name: { [Op.like]: `%${search}%` } }, { passenger_mobile: { [Op.like]: `%${search}%` } }];
+
+    if (search) {
+      where[Op.or] = [
+        { booking_reference: { [Op.like]: `%${search}%` } },
+        { passenger_name: { [Op.like]: `%${search}%` } },
+        { passenger_mobile: { [Op.like]: `%${search}%` } },
+        { passenger_email: { [Op.like]: `%${search}%` } },
+        { boarding_pass_code: { [Op.like]: `%${search}%` } },
+      ];
+    }
+
     if (booking_status) where.booking_status = booking_status;
     if (payment_status) where.payment_status = payment_status;
     if (trip_id) where.trip_id = trip_id;
-    if (from_date && to_date) where.travel_date = { [Op.between]: [from_date, to_date] };
 
+    // Date filtering (support single date or range)
+    if (date) {
+      where.travel_date = date;
+    } else if (from_date && to_date) {
+      where.travel_date = { [Op.between]: [from_date, to_date] };
+    } else if (from_date) {
+      where.travel_date = { [Op.gte]: from_date };
+    } else if (to_date) {
+      where.travel_date = { [Op.lte]: to_date };
+    }
+
+    // Role-based scoping for owners
+    let ownerTripIds = null;
     if (hasRole(req.user, 'owner')) {
       const [vehicles, drivers] = await Promise.all([
         Vehicle.findAll({ attributes: ['id'], where: { owner_id: req.user.id }, raw: true }),
         Driver.findAll({ attributes: ['id'], where: { owner_id: req.user.id }, raw: true }),
       ]);
-      const vehicleIds = vehicles.map((vehicle) => vehicle.id);
-      const driverIds = drivers.map((driver) => driver.id);
-      const assignedTrips = vehicleIds.length || driverIds.length
+      const vehicleIds = vehicles.map((v) => v.id);
+      const driverIds = drivers.map((d) => d.id);
+      const assignedTrips = (vehicleIds.length || driverIds.length)
         ? await Trip.findAll({
           attributes: ['id'],
-          where: { [Op.or]: [
-            ...(vehicleIds.length ? [{ vehicle_id: { [Op.in]: vehicleIds } }] : []),
-            ...(driverIds.length ? [{ driver_id: { [Op.in]: driverIds } }] : []),
-          ] },
+          where: {
+            [Op.or]: [
+              ...(vehicleIds.length ? [{ vehicle_id: { [Op.in]: vehicleIds } }] : []),
+              ...(driverIds.length ? [{ driver_id: { [Op.in]: driverIds } }] : []),
+            ],
+          },
           raw: true,
         })
         : [];
-      const assignedTripIds = assignedTrips
-        .map((trip) => Number(trip.id))
-        .filter((assignedTripId) => !trip_id || assignedTripId === Number(trip_id));
-      where.trip_id = { [Op.in]: assignedTripIds };
-      where[Op.and] = [...(where[Op.and] || []), { booking_status: { [Op.ne]: 'cancelled' } }];
+      ownerTripIds = assignedTrips.map((t) => Number(t.id));
+      where.booking_status = { [Op.ne]: 'cancelled' };
     }
 
-    const { count, rows } = await Booking.findAndCountAll({ where, include: BOOKING_INCLUDE, offset, limit: lim, order: [['created_at', 'DESC']] });
-    res.json({ success: true, data: rows, pagination: { total: count, page: p, limit: lim, pages: Math.ceil(count / lim) } });
+    // Filter by route, vehicle, or driver via associated Trip
+    if (route_id || vehicle_id || driver_id || ownerTripIds !== null) {
+      const tripWhere = {};
+      if (route_id) tripWhere.route_id = route_id;
+      if (vehicle_id) tripWhere.vehicle_id = vehicle_id;
+      if (driver_id) tripWhere.driver_id = driver_id;
+
+      if (ownerTripIds !== null) {
+        if (ownerTripIds.length === 0) {
+          return res.json({
+            success: true,
+            data: [],
+            pagination: { total: 0, page: p, limit: lim, pages: 0 },
+            summary: { total_bookings: 0, total_seats: 0, total_revenue: '0.00', confirmed_count: 0, cancelled_count: 0 },
+          });
+        }
+        tripWhere.id = { [Op.in]: ownerTripIds };
+      }
+
+      if (where.trip_id) {
+        tripWhere.id = tripWhere.id ? { [Op.and]: [tripWhere.id, where.trip_id] } : where.trip_id;
+      }
+
+      const matchingTrips = await Trip.findAll({
+        attributes: ['id'],
+        where: tripWhere,
+        raw: true,
+      });
+
+      const matchingTripIds = matchingTrips.map((t) => Number(t.id));
+      if (matchingTripIds.length === 0) {
+        return res.json({
+          success: true,
+          data: [],
+          pagination: { total: 0, page: p, limit: lim, pages: 0 },
+          summary: { total_bookings: 0, total_seats: 0, total_revenue: '0.00', confirmed_count: 0, cancelled_count: 0 },
+        });
+      }
+      where.trip_id = { [Op.in]: matchingTripIds };
+    }
+
+    const [count, rows, summaryStats] = await Promise.all([
+      Booking.count({ where, distinct: true }),
+      Booking.findAll({
+        where,
+        include: BOOKING_INCLUDE,
+        offset,
+        limit: lim,
+        order: [['created_at', 'DESC']],
+      }),
+      Booking.findAll({
+        where,
+        attributes: [
+          [fn('COUNT', col('id')), 'total_bookings'],
+          [fn('SUM', col('total_seats')), 'total_seats'],
+          [
+            fn('SUM', fn('COALESCE', col('final_amount'), col('total_fare'), 0)),
+            'total_revenue',
+          ],
+        ],
+        raw: true,
+      }),
+    ]);
+
+    const stats = summaryStats[0] || {};
+    const totalBookings = Number(stats.total_bookings || count || 0);
+    const totalSeats = Number(stats.total_seats || 0);
+    const totalRevenue = Number(stats.total_revenue || 0).toFixed(2);
+
+    res.json({
+      success: true,
+      data: rows,
+      pagination: { total: count, page: p, limit: lim, pages: Math.ceil(count / lim) },
+      summary: {
+        total_bookings: totalBookings,
+        total_seats: totalSeats,
+        total_revenue: totalRevenue,
+      },
+    });
   } catch (err) {
     next(err);
   }
@@ -292,6 +404,7 @@ exports.create = async (req, res, next) => {
         amount: total_fare,
         seatCount: total_seats || 1,
         passengerId: passenger_id,
+        passengerMobile: passenger_mobile,
         deviceId: device_id,
         transaction: t,
         lock: true,

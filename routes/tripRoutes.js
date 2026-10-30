@@ -25,4 +25,5 @@ router.patch('/:id/assign-driver', requirePermission('trips.manage'), requireOwn
 router.patch('/:id/assign-vehicle', requirePermission('trips.manage'), requireOwnerBookingAccess, tripController.assignVehicle);
 router.patch('/:id/assign-route', requirePermission('trips.manage'), requireOwnerBookingAccess, tripController.assignRoute);
 router.post('/generate-future', requirePermission('trips.manage'), tripController.generateFutureTrips);
+router.post('/copy-trips', requirePermission('trips.manage'), tripController.copyTrips);
 module.exports = router;

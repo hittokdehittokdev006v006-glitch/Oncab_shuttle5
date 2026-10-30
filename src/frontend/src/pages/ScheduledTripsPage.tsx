@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Edit2, Trash2, Download, Upload, Eye, FileSpreadsheet, X, CheckCircle2, Clock, Calendar, RefreshCw, Zap } from 'lucide-react';
+import { Plus, Edit2, Trash2, Download, Upload, Eye, FileSpreadsheet, X, CheckCircle2, Clock, Calendar, RefreshCw, Zap, Copy, ArrowRight, Filter, Search, RotateCcw, CalendarDays, Phone } from 'lucide-react';
 import { tripsAPI, routesAPI, driversAPI, vehiclesAPI } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { hasRole } from '../utils/roles';
@@ -19,6 +19,17 @@ const DAYS_OF_WEEK = [
   { id: '7', label: 'Sun', full: 'Sunday' },
 ];
 
+const getTodayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+const getTomorrowStr = () => {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
 export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify }) => {
   const { user, hasPermission } = useAuth();
   const isOwner = hasRole(user, 'owner');
@@ -31,6 +42,27 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState({ total: 0, pages: 1, limit: 15 });
+
+  // Table Date & Search Filter State
+  const [filterDate, setFilterDate] = useState<string>('');
+  const [search, setSearch] = useState<string>('');
+  const [routeFilter, setRouteFilter] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<string>('');
+
+  // Replicate / Duplicate Trips State
+  const [copyForm, setCopyForm] = useState({
+    source_date: getTodayStr(),
+    target_date: getTomorrowStr(),
+    include_driver_vehicle: true,
+    overwrite_existing: true,
+  });
+  const [copying, setCopying] = useState(false);
+
+  // Single Trip Copy Modal State
+  const [singleCopyTarget, setSingleCopyTarget] = useState<any | null>(null);
+  const [singleCopyDate, setSingleCopyDate] = useState<string>(getTomorrowStr());
+  const [singleCopyIncludeFleet, setSingleCopyIncludeFleet] = useState(true);
+  const [copyingSingle, setCopyingSingle] = useState(false);
 
   // Single / Recurring Master Schedule Creation Form
   const [singleForm, setSingleForm] = useState({
@@ -71,7 +103,13 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
     try {
       setLoading(true);
       setError('');
-      const resp = await tripsAPI.list({ page, limit: 15 });
+      const params: any = { page, limit: 15 };
+      if (filterDate) params.trip_date = filterDate;
+      if (search) params.search = search;
+      if (routeFilter) params.route_id = routeFilter;
+      if (statusFilter) params.status = statusFilter;
+
+      const resp = await tripsAPI.list(params);
       setSchedules(resp.data.data || []);
       setPagination(resp.data.pagination || { total: 0, pages: 1, limit: 15 });
     } catch (err: any) {
@@ -79,7 +117,7 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
     } finally {
       setLoading(false);
     }
-  }, [page]);
+  }, [page, filterDate, search, routeFilter, statusFilter]);
 
   const loadDropdowns = async () => {
     try {
@@ -199,6 +237,83 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
     if (timeValue) {
       setSingleForm((prev) => ({ ...prev, departure_time: timeValue }));
     }
+  };
+
+  // Replicate / Duplicate Day's Trips
+  const handleCopyTrips = async (customSource?: string, customTarget?: string) => {
+    const src = customSource || copyForm.source_date;
+    const tgt = customTarget || copyForm.target_date;
+
+    if (!src || !tgt) {
+      onNotify('Source date and Target date are required', 'error');
+      return;
+    }
+    if (src === tgt) {
+      onNotify('Target date must be different from source date', 'error');
+      return;
+    }
+
+    setCopying(true);
+    try {
+      const resp = await tripsAPI.copyTrips({
+        source_date: src,
+        target_date: tgt,
+        include_driver_vehicle: copyForm.include_driver_vehicle,
+        overwrite_existing: copyForm.overwrite_existing,
+      });
+
+      const message = resp.data?.message || `Successfully replicated trips to ${tgt}!`;
+      onNotify(message);
+
+      // Automatically switch table view to target date so operator can inspect the newly copied trips
+      setFilterDate(tgt);
+      setPage(1);
+    } catch (err: any) {
+      onNotify(err.response?.data?.message || 'Failed to replicate trips', 'error');
+    } finally {
+      setCopying(false);
+    }
+  };
+
+  const handleCopySingleTrip = async () => {
+    if (!singleCopyTarget || !singleCopyDate) {
+      onNotify('Target date is required', 'error');
+      return;
+    }
+
+    setCopyingSingle(true);
+    try {
+      const srcDate = singleCopyTarget.trip_date || filterDate || copyForm.source_date || getTodayStr();
+      const resp = await tripsAPI.copyTrips({
+        source_date: srcDate,
+        target_date: singleCopyDate,
+        trip_ids: [singleCopyTarget.id],
+        include_driver_vehicle: singleCopyIncludeFleet,
+        overwrite_existing: true,
+      });
+
+      onNotify(resp.data?.message || `Trip replicated to ${singleCopyDate}`);
+      setSingleCopyTarget(null);
+      setFilterDate(singleCopyDate);
+      setPage(1);
+    } catch (err: any) {
+      onNotify(err.response?.data?.message || 'Failed to replicate trip', 'error');
+    } finally {
+      setCopyingSingle(false);
+    }
+  };
+
+  const handleDateFilterChange = (date: string) => {
+    setFilterDate(date);
+    setPage(1);
+  };
+
+  const handleClearFilters = () => {
+    setFilterDate('');
+    setSearch('');
+    setRouteFilter('');
+    setStatusFilter('');
+    setPage(1);
   };
 
   // Bulk Generate Future Trips Action
@@ -374,7 +489,126 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
 
   return (
     <div className="space-y-5">
-      {/* ── Card 1: Create Master & Recurring Trip Schedule ── */}
+      {/* ── Card 1: 1-Click Replicate Day's Trips to Tomorrow / Target Date ── */}
+      {!isOwner && (
+        <div className="bg-gradient-to-r from-indigo-900/90 via-purple-900/90 to-slate-900 text-white p-5 rounded-2xl border border-indigo-500/40 shadow-xl space-y-4 relative overflow-hidden">
+          {/* Subtle decorative glow */}
+          <div className="absolute -right-10 -bottom-10 w-44 h-44 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none" />
+
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-400 text-slate-950 mb-1.5">
+                <Zap size={12} className="fill-slate-950" /> HIGH-PRIORITY OPERATOR TOOL
+              </div>
+              <h3 className="text-base font-extrabold text-white flex items-center gap-2">
+                <Copy size={18} className="text-indigo-400" />
+                Replicate / Copy Day's Scheduled Trips
+              </h3>
+              <p className="text-xs text-indigo-200/80 mt-0.5">
+                Duplicate all scheduled trips from today (e.g. 26 Oct) to tomorrow (27 Oct) or any target date with routes, timings, and fleet assignments intact.
+              </p>
+            </div>
+
+            {/* Quick 1-Click Preset Button */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleCopyTrips(getTodayStr(), getTomorrowStr())}
+                disabled={copying}
+                className="px-4 py-2 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 text-xs font-extrabold rounded-xl shadow-lg transition-all transform active:scale-95 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+              >
+                {copying ? (
+                  <RefreshCw size={14} className="animate-spin text-slate-950" />
+                ) : (
+                  <Zap size={14} className="fill-slate-950" />
+                )}
+                ⚡ Copy Today's Trips ({getTodayStr()}) to Tomorrow ({getTomorrowStr()})
+              </button>
+            </div>
+          </div>
+
+          <div className="p-4 bg-slate-950/40 backdrop-blur-md rounded-xl border border-indigo-400/20 grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+            {/* SOURCE DATE */}
+            <div className="md:col-span-3">
+              <label className="block text-[11px] font-bold text-indigo-200 mb-1 tracking-wider uppercase flex items-center gap-1">
+                <Calendar size={13} className="text-indigo-400" />
+                SOURCE DATE (FROM)
+              </label>
+              <input
+                type="date"
+                value={copyForm.source_date}
+                onChange={(e) => setCopyForm({ ...copyForm, source_date: e.target.value })}
+                className="w-full px-3 py-2 text-xs bg-slate-900/90 text-white border border-indigo-400/30 rounded-lg focus:outline-none focus:border-amber-400 font-medium"
+              />
+            </div>
+
+            {/* ARROW */}
+            <div className="hidden md:flex md:col-span-1 justify-center pb-2">
+              <ArrowRight size={20} className="text-indigo-300 animate-pulse" />
+            </div>
+
+            {/* TARGET DATE */}
+            <div className="md:col-span-3">
+              <label className="block text-[11px] font-bold text-amber-300 mb-1 tracking-wider uppercase flex items-center gap-1">
+                <Calendar size={13} className="text-amber-400" />
+                TARGET DATE (TO)
+              </label>
+              <input
+                type="date"
+                value={copyForm.target_date}
+                onChange={(e) => setCopyForm({ ...copyForm, target_date: e.target.value })}
+                className="w-full px-3 py-2 text-xs bg-slate-900/90 text-white border border-amber-400/50 rounded-lg focus:outline-none focus:border-amber-400 font-medium ring-1 ring-amber-400/20"
+              />
+            </div>
+
+            {/* OPTIONS */}
+            <div className="md:col-span-2 flex flex-col justify-end space-y-1.5 pb-1">
+              <label className="inline-flex items-center gap-2 cursor-pointer text-[11px] text-slate-200 font-semibold select-none">
+                <input
+                  type="checkbox"
+                  checked={copyForm.include_driver_vehicle}
+                  onChange={(e) => setCopyForm({ ...copyForm, include_driver_vehicle: e.target.checked })}
+                  className="rounded text-indigo-500 focus:ring-0 w-3.5 h-3.5 bg-slate-800 border-slate-600"
+                />
+                Include Drivers & Buses
+              </label>
+              <label className="inline-flex items-center gap-2 cursor-pointer text-[11px] text-slate-200 font-semibold select-none">
+                <input
+                  type="checkbox"
+                  checked={copyForm.overwrite_existing}
+                  onChange={(e) => setCopyForm({ ...copyForm, overwrite_existing: e.target.checked })}
+                  className="rounded text-indigo-500 focus:ring-0 w-3.5 h-3.5 bg-slate-800 border-slate-600"
+                />
+                Update existing
+              </label>
+            </div>
+
+            {/* ACTION BUTTON */}
+            <div className="md:col-span-3">
+              <button
+                type="button"
+                onClick={() => handleCopyTrips()}
+                disabled={copying}
+                className="w-full px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg shadow-md transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {copying ? (
+                  <>
+                    <RefreshCw size={14} className="animate-spin" />
+                    Replicating Trips...
+                  </>
+                ) : (
+                  <>
+                    <Copy size={14} />
+                    Copy All Trips to {copyForm.target_date || 'Target Date'}
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Card 2: Create Master & Recurring Trip Schedule ── */}
       {!isOwner && <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -767,6 +1001,125 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
         )}
       </div>}
 
+      {/* ── Table Filter & Search Bar ── */}
+      <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <CalendarDays size={18} className="text-indigo-600 dark:text-indigo-400" />
+            <span className="text-sm font-bold text-slate-900 dark:text-white">
+              Scheduled Trips Explorer
+            </span>
+            <span className="px-2.5 py-0.5 text-xs font-extrabold bg-indigo-50 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 rounded-full border border-indigo-200 dark:border-indigo-800">
+              {pagination.total} Total Trips
+            </span>
+            {filterDate && (
+              <span className="px-2.5 py-0.5 text-xs font-bold bg-amber-50 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 rounded-full border border-amber-200 dark:border-amber-800 flex items-center gap-1">
+                <Calendar size={11} /> Date: {filterDate}
+              </span>
+            )}
+          </div>
+
+          {/* Quick Date Pills */}
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => handleDateFilterChange('')}
+              className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                !filterDate
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+              }`}
+            >
+              All Dates
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDateFilterChange(getTodayStr())}
+              className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                filterDate === getTodayStr()
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+              }`}
+            >
+              Today ({getTodayStr()})
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDateFilterChange(getTomorrowStr())}
+              className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                filterDate === getTomorrowStr()
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+              }`}
+            >
+              Tomorrow ({getTomorrowStr()})
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800 items-center">
+          {/* Custom Date Input */}
+          <div className="sm:col-span-3">
+            <div className="relative">
+              <input
+                type="date"
+                value={filterDate}
+                onChange={(e) => handleDateFilterChange(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white font-medium focus:outline-none focus:border-indigo-500"
+              />
+              <Calendar size={13} className="absolute left-2.5 top-2.5 text-slate-400 pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Route filter */}
+          <div className="sm:col-span-3">
+            <select
+              value={routeFilter}
+              onChange={(e) => {
+                setRouteFilter(e.target.value);
+                setPage(1);
+              }}
+              className="w-full px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white font-medium focus:outline-none focus:border-indigo-500"
+            >
+              <option value="">All Routes</option>
+              {routes.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.route_name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Search input */}
+          <div className="sm:col-span-4">
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Search schedule code, route, driver..."
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                }}
+                className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white font-medium focus:outline-none focus:border-indigo-500"
+              />
+              <Search size={13} className="absolute left-2.5 top-2.5 text-slate-400 pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Clear button */}
+          <div className="sm:col-span-2 flex justify-end">
+            <button
+              type="button"
+              onClick={handleClearFilters}
+              className="w-full sm:w-auto px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <RotateCcw size={12} /> Reset Filters
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* ── Scheduled Trips Table ── */}
       <Card padding={false}>
         {error ? (
@@ -817,7 +1170,13 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
                     <div className="font-bold text-slate-900 dark:text-slate-100">
                       {schedule.driver?.name || 'No Driver'}
                     </div>
-                    <div className="text-[11px] font-mono font-semibold text-slate-600 dark:text-slate-400">
+                    {schedule.driver?.mobile && (
+                      <div className="flex items-center gap-1 text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-0.5">
+                        <Phone size={10} className="text-indigo-500 dark:text-indigo-400 shrink-0" />
+                        <span>{schedule.driver.mobile}</span>
+                      </div>
+                    )}
+                    <div className="text-[11px] font-mono font-semibold text-slate-600 dark:text-slate-400 mt-0.5">
                       {schedule.vehicle?.registration_number || 'No Vehicle'}
                     </div>
                   </Td>
@@ -833,6 +1192,19 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
                   </Td>
                   <Td>
                     <div className="flex items-center gap-1.5">
+                      {!isOwner && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title="Copy this trip to another date"
+                          onClick={() => {
+                            setSingleCopyTarget(schedule);
+                            setSingleCopyDate(getTomorrowStr());
+                          }}
+                        >
+                          <Copy size={13} className="text-indigo-600 dark:text-indigo-400" />
+                        </Button>
+                      )}
                       {canRequestAssignment && <Button variant="ghost" size="sm" onClick={() => handleOpenEdit(schedule)}>
                         <Edit2 size={13} />
                       </Button>}
@@ -954,6 +1326,67 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
             <div className="flex justify-end gap-2 pt-3">
               <Button variant="ghost" onClick={() => setEditSchedule(null)}>Cancel</Button>
               <Button variant="primary" loading={savingEdit} onClick={handleSaveEdit}>{isOwner ? 'Request Approval' : 'Save Changes'}</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Single Trip Copy Modal */}
+      {singleCopyTarget && (
+        <Modal
+          open={!!singleCopyTarget}
+          onClose={() => setSingleCopyTarget(null)}
+          title={`Copy Trip: ${singleCopyTarget.schedule_code}`}
+        >
+          <div className="space-y-4">
+            <div className="p-3 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800/80 rounded-xl text-xs space-y-1">
+              <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <Copy size={14} className="text-indigo-600 dark:text-indigo-400" />
+                {singleCopyTarget.route?.route_name || 'Trip Schedule'} ({singleCopyTarget.departure_time})
+              </div>
+              <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                Current Date: <strong>{singleCopyTarget.trip_date || filterDate || 'Not specified'}</strong>
+                {singleCopyTarget.driver && ` • Driver: ${singleCopyTarget.driver.name}`}
+                {singleCopyTarget.vehicle && ` • Vehicle: ${singleCopyTarget.vehicle.registration_number}`}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1 tracking-wider uppercase">
+                TARGET DATE (TO REPLICATE) <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="date"
+                required
+                value={singleCopyDate}
+                onChange={(e) => setSingleCopyDate(e.target.value)}
+                className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white font-medium focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700">
+              <label className="inline-flex items-center gap-2 cursor-pointer text-xs text-slate-800 dark:text-slate-200 font-semibold select-none">
+                <input
+                  type="checkbox"
+                  checked={singleCopyIncludeFleet}
+                  onChange={(e) => setSingleCopyIncludeFleet(e.target.checked)}
+                  className="rounded text-indigo-600 focus:ring-0 w-4 h-4 bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600"
+                />
+                Keep assigned driver ({singleCopyTarget.driver?.name || 'None'}) & vehicle ({singleCopyTarget.vehicle?.registration_number || 'None'})
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="ghost" onClick={() => setSingleCopyTarget(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                loading={copyingSingle}
+                onClick={handleCopySingleTrip}
+              >
+                Replicate Trip
+              </Button>
             </div>
           </div>
         </Modal>

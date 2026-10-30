@@ -1,227 +1,601 @@
-# Ride Packages API
+# Oncab Ride Packages (Prepaid Ride Passes) - Mobile App API Documentation
 
-The admin dashboard page is available at `/packages` (for example,
-`https://oncab.in/bus-operator-dev/api2/bus/packages`). Package records are read from
-`ride_packages`.
+Complete API specification for the passenger mobile app (Android / iOS / Web).
+All endpoints use the base URL:
+`https://oncab.in/bus-operator-dev/api2/bus` (or `/api2/shuttle` alias)
 
-## Admin management APIs
+---
 
-All admin endpoints below use the `/api2` API base and require a bearer access
-token. Listing and viewing require `packages.read`; create, update, status
-toggle, and delete require `packages.manage`.
+## 📌 Complete App Integration Architecture & Flow
 
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| `GET` | `/packages?status=all` | List packages, including inactive records. `status` can be `Active`, `Inactive`, or `all`. |
-| `GET` | `/packages/:id` | Get a package by database ID or package code. |
-| `POST` | `/packages` | Create a package. |
-| `PUT` | `/packages/:id` | Update a package. |
-| `PATCH` | `/packages/:id/toggle-status` | Switch between `Active` and `Inactive`. |
-| `DELETE` | `/packages/:id` | Soft-delete a package. |
+```
+1. BROWSE PACKAGES ──▶ GET /packages?route_id=X
+       │
+       ▼
+2. BUY PACKAGE      ──▶ POST /package-purchases (Auth: Bearer Token)
+       │               Returns: purchase_id (status: pending_payment)
+       ▼
+3. PAY VIA PAYU     ──▶ POST /payment/payu/initiate (package_purchase_id)
+       │               Returns: PayU action URL & form fields (hash, txnid)
+       │               App renders PayU Checkout
+       ▼
+4. ACTIVATION       ──▶ PayU Webhook / Callback marks payment "paid" & status "active"
+       │               Package is now loaded with rides and valid until expires_at
+       ▼
+5. CHECK BALANCE    ──▶ GET /my-packages (Shows available_rides, expires_at)
+       │
+       ▼
+6. BOOK A TRIP      ──▶ POST /create-booking with package_purchase_id & idempotency_key
+       │               Reserves ride (available_rides decremented by total_seats)
+       │               Booking is confirmed with ₹0 additional payment
+       ▼
+7. LIFECYCLE:
+   - If Passenger CANCELS: POST /bookings/:id/cancel ──▶ Ride reservation RELEASED back to pass.
+   - When Driver COMPLETES TRIP: Boarded rides marked CONSUMED; pass balance permanently updated.
+```
 
-Create and update fields are `package_code`, `name`, `package_type`,
-`rides_count`, `validity_days`, `price_per_ride`, `total_price`,
-`original_price`, `discount_percentage`, `route_id`, `description`, `features`
-(string array), `badge_text`, `is_popular`, and `status`. The allowed
-`package_type` values are `single_trip`, `fixed_bundle`, `daily`, `weekly`,
-`monthly`, `quarterly`, and `annual`. Set `route_id` to `null` for a package
-available on all routes.
+---
 
-## Passenger app: browse and book a package
+## 🔑 Authentication Headers
 
-Passenger endpoints are public and use the `/api2` base URL. Package prices are
-calculated from the database; clients must send the package ID/code, not a
-client-calculated amount.
+All passenger package purchase, balance, booking, and cancellation endpoints require the Passenger JWT Access Token:
 
-1. `GET /bus/packages?route_id=:routeId` lists active packages compatible with
-   the selected route. `route_id` is optional; global packages are included.
-2. `GET /bus/packages/:id` returns one package by ID or code.
-3. `POST /bus/create-booking` creates a booking using the package's current
-   database price. Send the required trip, passenger, stop, and date fields:
+```http
+Authorization: Bearer <passenger_access_token>
+Content-Type: application/json
+```
 
+---
+
+## 1. Browse Available Ride Packages
+
+Fetches active packages available for purchase. Optionally filtered by route. Global packages (`route_id = null`) apply to all routes.
+
+- **Method**: `GET` (or `POST`)
+- **URL**: `https://oncab.in/bus-operator-dev/api2/bus/packages`
+- **Auth**: Public (None required)
+- **Query Parameters**:
+  - `route_id` *(optional, integer)*: ID of the selected route to show route-specific + global packages.
+
+### Request Example
+```http
+GET https://oncab.in/bus-operator-dev/api2/bus/packages?route_id=5
+Accept: application/json
+```
+
+### Success Response (`200 OK`)
 ```json
 {
-  "trip_id": 123,
-  "passenger_id": 42,
-  "passenger_name": "Passenger Name",
-  "passenger_mobile": "9876543210",
-  "passenger_email": "passenger@example.com",
-  "origin_stop_id": 10,
-  "destination_stop_id": 15,
-  "travel_date": "2026-11-01",
-  "seat_numbers": [1],
-  "total_seats": 1,
+  "status": 200,
+  "success": true,
+  "message": "Ride Pack packages retrieved successfully",
+  "data": [
+    {
+      "id": 1,
+      "package_code": "TEN-RIDES-PASS",
+      "name": "10 Rides Smart Pass",
+      "package_type": "fixed_bundle",
+      "rides_count": 10,
+      "validity_days": 30,
+      "price_per_ride": 70.00,
+      "total_price": 700.00,
+      "original_price": 900.00,
+      "savings_amount": 200.00,
+      "discount_percentage": 22,
+      "formatted_price": "₹700",
+      "formatted_per_ride": "₹70/ride",
+      "route_id": null,
+      "description": "Save ₹200 on daily commute across any route. Valid for 30 days.",
+      "features": [
+        "10 Trips on any route",
+        "Valid for 30 days from purchase",
+        "Free cancellation up to 30 mins before trip",
+        "Priority seat confirmation"
+      ],
+      "badge_text": "BESTSELLER",
+      "is_popular": true,
+      "status": "Active"
+    },
+    {
+      "id": 2,
+      "package_code": "MONTHLY-PASS-40",
+      "name": "Monthly Commuter Pass",
+      "package_type": "monthly",
+      "rides_count": 40,
+      "validity_days": 35,
+      "price_per_ride": 55.00,
+      "total_price": 2200.00,
+      "original_price": 3600.00,
+      "savings_amount": 1400.00,
+      "discount_percentage": 39,
+      "formatted_price": "₹2200",
+      "formatted_per_ride": "₹55/ride",
+      "route_id": 5,
+      "description": "Unlimited commute between Salt Lake and Howrah for 35 days.",
+      "features": [
+        "40 Rides on Route #5",
+        "Valid for 35 days",
+        "Guaranteed window seats",
+        "Maximum savings"
+      ],
+      "badge_text": "SUPER SAVER",
+      "is_popular": false,
+      "status": "Active"
+    }
+  ]
+}
+```
+
+---
+
+## 2. Get Single Package Details
+
+Fetches full pricing, validity, features, and route restrictions of a specific package by database ID or unique package code.
+
+- **Method**: `GET`
+- **URL**: `https://oncab.in/bus-operator-dev/api2/bus/packages/:id`
+- **Path Parameter**: `:id` — Database package ID (e.g. `1`) or code (`TEN-RIDES-PASS`)
+- **Auth**: Public
+
+### Request Example
+```http
+GET https://oncab.in/bus-operator-dev/api2/bus/packages/TEN-RIDES-PASS
+```
+
+### Success Response (`200 OK`)
+```json
+{
+  "status": 200,
+  "success": true,
+  "message": "Package details retrieved successfully",
+  "data": {
+    "id": 1,
+    "package_code": "TEN-RIDES-PASS",
+    "name": "10 Rides Smart Pass",
+    "package_type": "fixed_bundle",
+    "rides_count": 10,
+    "validity_days": 30,
+    "price_per_ride": 70.00,
+    "total_price": 700.00,
+    "original_price": 900.00,
+    "savings_amount": 200.00,
+    "discount_percentage": 22,
+    "route_id": null,
+    "description": "Save ₹200 on daily commute across any route. Valid for 30 days.",
+    "features": [
+      "10 Trips on any route",
+      "Valid for 30 days from purchase",
+      "Free cancellation"
+    ],
+    "badge_text": "BESTSELLER",
+    "is_popular": true,
+    "status": "Active"
+  }
+}
+```
+
+---
+
+## 3. Create Package Purchase (Order Pending Pass)
+
+Initiates a purchase for a package. The server creates a snapshot of the package (price, rides count, validity days, route scope) and generates a record in status `pending_payment`.
+
+- **Method**: `POST`
+- **URL**: `https://oncab.in/bus-operator-dev/api2/bus/package-purchases`
+- **Auth**: `Bearer <passenger_access_token>` (Required)
+
+### Request Body
+```json
+{
   "package_id": 1
 }
 ```
+*(Or use `"package_code": "TEN-RIDES-PASS"`)*
 
-Use either `trip_id` or `schedule_id`, and either `package_id` or
-`package_code`. The response contains the booking `id`, `booking_reference`,
-`final_amount`, and package price snapshot. A booking without wallet payment
-remains pending payment.
-
-## PayU payment for a package booking
-
-After creating the booking, initialize checkout with:
-
-`POST /api2/bus/payment/payu/initiate`
-
+### Success Response (`201 Created`)
 ```json
 {
-  "booking_id": 987,
-  "passenger_mobile": "9876543210"
+  "success": true,
+  "message": "Package purchase created. Complete PayU checkout to activate it.",
+  "data": {
+    "id": 501,
+    "passenger_id": 42,
+    "package_id": 1,
+    "route_id": null,
+    "package_code": "TEN-RIDES-PASS",
+    "package_name": "10 Rides Smart Pass",
+    "total_rides": 10,
+    "used_rides": 0,
+    "reserved_rides": 0,
+    "available_rides": 10,
+    "remaining_rides": 10,
+    "unconsumed_rides": 10,
+    "validity_days": 30,
+    "price_per_ride": 70.00,
+    "amount_paid": 700.00,
+    "payment_status": "pending",
+    "status": "pending_payment",
+    "activated_at": null,
+    "expires_at": null,
+    "created_at": "2026-10-26T15:00:00.000Z",
+    "updated_at": "2026-10-26T15:00:00.000Z"
+  }
 }
 ```
 
-The response's `data.action`, `data.method`, and `data.fields` are the PayU
-hosted-checkout form target, method, and fields. Submit those fields to the
-returned action. The amount is taken from the booking's server-calculated
-`final_amount`; the client must not submit a payment amount. PayU returns to
-the configured callback, which validates PayU's signature and amount, updates
-the payment and booking, and confirms the booking (or creates a refund if the
-seat can no longer be allocated).
+### Error Responses
+- `400 Bad Request`: `{"success": false, "message": "package_id or package_code is required"}`
+- `401 Unauthorized`: `{"success": false, "message": "Passenger authentication required"}`
+- `404 Not Found`: `{"success": false, "message": "Active package was not found"}`
 
-The booking flow stores the package ID and immutable package-price snapshot on
-the booking. It is a trip booking priced with a selected Ride Package; it does
-not create a separate passenger ride-credit wallet.
+---
 
-## Passenger app: buy and use a prepaid ride pass
+## 4. Initiate PayU Checkout for Package Purchase
 
-Prepaid ride passes are separate from the legacy per-trip package-pricing flow
-above. Pass purchase and balance routes require a passenger bearer token; the
-server derives the passenger ID from that token and does not accept a
-client-selected owner.
+Generates the PayU hosted checkout form fields, signed transaction ID, and cryptographic SHA-512 payment hash.
 
-1. `POST /api2/bus/package-purchases` with `package_id` or `package_code`
-   creates a `pending_payment` purchase and snapshots the package's ride count,
-   validity, route scope, and price.
-2. `POST /api2/bus/payment/payu/initiate` with `package_purchase_id` returns
-   the hosted PayU form fields. The signed callback marks payment as paid,
-   activates the purchase, and calculates its expiry from activation time.
-3. `GET /api2/bus/my-packages` lists purchases and balances.
-   `GET /api2/bus/my-packages/:purchaseId` returns one balance and expiry;
-   `GET /api2/bus/my-packages/:purchaseId/usage` returns its booking history.
-4. Create a trip booking with `POST /api2/bus/create-booking` using
-   `package_purchase_id` instead of `package_id` or `package_code`, and include
-   a stable unique `idempotency_key` for the booking attempt. A package ride is
-   reserved in the same database transaction as the booking. Each requested
-   seat consumes one ride. Retrying with the same key returns the original
-   booking without reserving additional rides.
-5. Cancelling an eligible booking releases its reservation through
-   `POST /api2/bus/bookings/:bookingId/cancel` or the bus/shuttle cancellation
-   aliases, with the passenger bearer token. The token owner must match the
-   booking owner; legacy bookings retain their existing cancellation behavior.
-   Operator/admin cancellation and trip cancellation also release reservations.
-   When the driver marks the trip complete, boarded rides are consumed; a
-   recorded no-show also consumes the reserved ride. Reservations for cancelled
-   or unboarded bookings are released at trip completion. Cancelling a trip
-   through the operator trip-status API or removing its date during schedule
-   regeneration cancels its pending prepaid-pass bookings and releases their
-   reservations.
+- **Method**: `POST`
+- **URL**: `https://oncab.in/bus-operator-dev/api2/bus/payment/payu/initiate`
+- **Auth**: `Bearer <passenger_access_token>` (Required)
 
-   Example package booking request:
-
-   ```json
-   {
-     "trip_id": 123,
-     "origin_stop_id": 10,
-     "destination_stop_id": 15,
-     "travel_date": "2026-11-01",
-     "seat_numbers": [1],
-     "total_seats": 1,
-     "package_purchase_id": 501,
-     "idempotency_key": "pass-501-trip-123-seat-1"
-   }
-   ```
-
-   The authenticated passenger ID is taken from the bearer token; `passenger_id`
-   is not required for this prepaid-pass request.
-
-Balances distinguish consumed and reserved rides:
-
-```text
-available_rides = total_rides - used_rides - reserved_rides
+### Request Body
+```json
+{
+  "package_purchase_id": 501
+}
 ```
 
-For example, a 10-ride purchase with 1 consumed and 1 reserved ride reports
-8 `available_rides` and `remaining_rides`, with `unconsumed_rides` equal to 9.
-
-The purchase is not usable before PayU confirms payment, after expiry, or when
-its available balance is insufficient. It becomes `exhausted` only after all
-rides are consumed, not merely when all remaining rides are reserved. An
-expired purchase cannot create new bookings. Expiry is calculated as the exact
-number of 24-hour days after activation and is exclusive: a purchase is expired
-at the recorded `expires_at` timestamp.
-
-For backwards compatibility, `package_id`/`package_code` on the original
-booking endpoints continues to use the per-trip price-snapshot behavior
-described above. Use `package_purchase_id` for reusable prepaid ride credits.
-
-## Admin purchase ledger
-
-Users with the `packages.read` permission can review prepaid purchases in the
-admin panel under **Bookings & Revenue → Package Purchases**. The list displays
-the passenger, package snapshot, purchase/payment status, ride balance, amount,
-and latest payment transaction ID. Open a purchase to see its full payment
-transaction history and ride reservation/consumption history.
-
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| `GET` | `/api2/package-purchases` | Paginated purchase ledger. Accepts `page`, `limit`, `search`, `status`, `payment_status`, `from_date`, and `to_date`. Search matches purchase ID, package name/code, and passenger name/mobile/email. |
-| `GET` | `/api2/package-purchases/:purchaseId` | One purchase with passenger details, payment transactions, and ride usage. |
-
-Example list query:
-
-```http
-GET /api2/package-purchases?page=1&limit=15&payment_status=paid&search=Sam
-Authorization: Bearer <admin_access_token>
+### Success Response (`200 OK`)
+```json
+{
+  "success": true,
+  "message": "PayU checkout initialized",
+  "data": {
+    "action": "https://secure.payu.in/_payment",
+    "method": "POST",
+    "fields": {
+      "key": "mQGxxxx",
+      "txnid": "OC179300520012345",
+      "amount": "700.00",
+      "productinfo": "Ride Package TEN-RIDES-PASS",
+      "firstname": "Rahul Sharma",
+      "email": "rahul.sharma@example.com",
+      "phone": "9876543210",
+      "surl": "https://oncab.in/bus-operator-dev/api2/bus/payment/payu-callback",
+      "furl": "https://oncab.in/bus-operator-dev/api2/bus/payment/payu-callback",
+      "udf1": "package_purchase:501",
+      "udf2": "",
+      "udf3": "",
+      "udf4": "",
+      "udf5": "",
+      "hash": "b2e5a78f14c0a59928bc3a67d025e791244e8bc1a37c569..."
+    }
+  }
+}
 ```
 
-## Passenger app purchase and transaction APIs
+### App Handling Logic:
+1. Open a mobile WebView or post the form to `data.action` with `data.fields`.
+2. PayU redirects the user to complete payment (Cards, UPI, NetBanking).
+3. PayU calls the signed callback (`surl`). The backend verifies the cryptographic hash, marks `payment_status = "paid"`, activates the purchase:
+   - `status = "active"`
+   - `activated_at = NOW()`
+   - `expires_at = NOW() + (validity_days * 24 hours)`
+4. The pass is now active and immediately usable for booking trips!
 
-All passenger endpoints below require the passenger access token in the
-`Authorization: Bearer <passenger_access_token>` header. The app helper
-`passengerPackagesAPI` in `src/frontend/src/services/api.ts` uses that token
-automatically.
+---
 
-| Method | Endpoint | App use |
-| --- | --- | --- |
-| `POST` | `/api2/bus/package-purchases` | Create a pending purchase. Body: `{"package_id": 12}` or `{"package_code": "TEN-RIDES"}`. |
-| `POST` | `/api2/bus/payment/payu/initiate` | Start PayU checkout. Body: `{"package_purchase_id": 501}`. |
-| `GET` | `/api2/bus/my-packages` | List the passenger's purchases and current ride balances. |
-| `GET` | `/api2/bus/my-packages/:purchaseId` | Read one purchase/balance. |
-| `GET` | `/api2/bus/my-packages/:purchaseId/usage` | Read reservations, consumed rides, and releases. |
-| `GET` | `/api2/bus/my-package-transactions?page=1&limit=20` | Paginated payment transaction history for this passenger's prepaid packages. |
-| `POST` | `/api2/bus/create-booking` | Book a ride using `package_purchase_id` and a stable `idempotency_key`. |
-| `GET` | `/api2/bus/bookings/:bookingId` | Read one of the passenger's bookings. |
-| `POST` | `/api2/bus/bookings/:bookingId/cancel` | Cancel an eligible booking and release the reservation. |
+## 5. List Passenger's Packages & Ride Balances
 
-The transaction-history endpoint returns safe payment fields (transaction IDs,
-gateway/method, amount, currency, status, and timestamp) alongside a package
-snapshot. It does not return raw gateway payloads or callback data. All purchase,
-balance, usage, transaction, and booking reads are scoped to the authenticated
-passenger.
+Fetches all packages purchased by the logged-in passenger along with real-time ride balances and expiry status.
 
-## Shuttle API aliases
+- **Method**: `GET`
+- **URL**: `https://oncab.in/bus-operator-dev/api2/bus/my-packages`
+- **Auth**: `Bearer <passenger_access_token>` (Required)
 
-For clients already using the shuttle API namespace, these equivalent package
-and checkout routes are also available:
+### Success Response (`200 OK`)
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 501,
+      "passenger_id": 42,
+      "package_id": 1,
+      "package_code": "TEN-RIDES-PASS",
+      "package_name": "10 Rides Smart Pass",
+      "route_id": null,
+      "total_rides": 10,
+      "used_rides": 2,
+      "reserved_rides": 1,
+      "available_rides": 7,
+      "remaining_rides": 7,
+      "unconsumed_rides": 8,
+      "validity_days": 30,
+      "price_per_ride": 70.00,
+      "amount_paid": 700.00,
+      "payment_status": "paid",
+      "status": "active",
+      "activated_at": "2026-10-26T15:05:00.000Z",
+      "expires_at": "2026-11-25T15:05:00.000Z",
+      "created_at": "2026-10-26T15:00:00.000Z"
+    }
+  ]
+}
+```
 
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| `GET` | `/shuttle/packages?route_id=:routeId` | List active packages. |
-| `POST` | `/shuttle/packages/list` | List active packages using a JSON body. |
-| `GET` | `/shuttle/packages/:id` | Get package details. |
-| `POST` | `/shuttle/book` | Create a shuttle booking; include `package_id` or `package_code` to price it as a package booking. |
-| `POST` | `/shuttle/payment/payu/initiate` | Start PayU checkout for the created booking. |
-| `POST` | `/shuttle/payment/payu-callback` | PayU callback alias; the configured callback defaults to `/bus/payment/payu-callback`. |
+### Ride Balance Arithmetic:
+- `available_rides` = `total_rides - used_rides - reserved_rides` *(Rides that can be booked right now)*
+- `unconsumed_rides` = `total_rides - used_rides`
+- `status`:
+  - `pending_payment`: Awaiting PayU confirmation.
+  - `active`: Usable.
+  - `exhausted`: All rides consumed (`used_rides == total_rides`).
+  - `expired`: Current timestamp exceeds `expires_at`.
 
-## Frontend API helpers
+---
 
-The operator dashboard uses `packagesAPI` for authenticated CRUD. The passenger
-app can use `shuttleAPI.getAvailablePackages`, `getAvailablePackage`,
-`createPackageBooking`, and `initiatePackagePayment` from
-`src/frontend/src/services/api.ts`. Passenger purchase and balance helpers are
-available as `passengerPackagesAPI`; they read the passenger bearer token from
-`passenger_access_token` and expose purchase, balance, usage, booking, and
-PayU-initiation calls.
+## 6. Get Single Purchased Package & Balance
+
+Fetches status, remaining rides, and expiry for a single pass.
+
+- **Method**: `GET`
+- **URL**: `https://oncab.in/bus-operator-dev/api2/bus/my-packages/:purchaseId`
+- **Path Parameter**: `:purchaseId` — e.g. `501`
+- **Auth**: `Bearer <passenger_access_token>` (Required)
+
+### Success Response (`200 OK`)
+```json
+{
+  "success": true,
+  "data": {
+    "id": 501,
+    "package_name": "10 Rides Smart Pass",
+    "package_code": "TEN-RIDES-PASS",
+    "total_rides": 10,
+    "used_rides": 2,
+    "reserved_rides": 1,
+    "available_rides": 7,
+    "remaining_rides": 7,
+    "status": "active",
+    "expires_at": "2026-11-25T15:05:00.000Z"
+  }
+}
+```
+
+---
+
+## 7. Get Ride Usage History of a Pass
+
+Returns every trip reservation, boarded ride, and cancelled/released ride linked to this pass.
+
+- **Method**: `GET`
+- **URL**: `https://oncab.in/bus-operator-dev/api2/bus/my-packages/:purchaseId/usage`
+- **Auth**: `Bearer <passenger_access_token>` (Required)
+
+### Success Response (`200 OK`)
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 102,
+      "purchase_id": 501,
+      "booking_id": 987,
+      "rides_reserved": 1,
+      "rides_consumed": 0,
+      "status": "reserved",
+      "reserved_at": "2026-10-26T16:00:00.000Z",
+      "consumed_at": null,
+      "released_at": null,
+      "booking": {
+        "id": 987,
+        "booking_reference": "BK-261026-0987",
+        "travel_date": "2026-10-27",
+        "booking_status": "confirmed"
+      }
+    },
+    {
+      "id": 101,
+      "purchase_id": 501,
+      "booking_id": 950,
+      "rides_reserved": 1,
+      "rides_consumed": 1,
+      "status": "consumed",
+      "reserved_at": "2026-10-25T10:00:00.000Z",
+      "consumed_at": "2026-10-25T18:45:00.000Z",
+      "released_at": null,
+      "booking": {
+        "id": 950,
+        "booking_reference": "BK-251025-0950",
+        "travel_date": "2026-10-25",
+        "booking_status": "completed"
+      }
+    }
+  ]
+}
+```
+
+---
+
+## 8. List Payment Transactions for Packages
+
+Returns paginated payment gateway transactions for prepaid package orders.
+
+- **Method**: `GET`
+- **URL**: `https://oncab.in/bus-operator-dev/api2/bus/my-package-transactions?page=1&limit=20`
+- **Auth**: `Bearer <passenger_access_token>` (Required)
+
+### Success Response (`200 OK`)
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 340,
+      "package_purchase_id": 501,
+      "payu_txnid": "OC179300520012345",
+      "payu_mihpayid": "403993715530123456",
+      "payment_gateway": "payu",
+      "payment_method": "UPI",
+      "amount": "700.00",
+      "currency": "INR",
+      "status": "success",
+      "created_at": "2026-10-26T15:04:12.000Z",
+      "package_purchase": {
+        "id": 501,
+        "package_name": "10 Rides Smart Pass",
+        "package_code": "TEN-RIDES-PASS",
+        "total_rides": 10,
+        "validity_days": 30,
+        "status": "active"
+      }
+    }
+  ],
+  "pagination": {
+    "total": 1,
+    "page": 1,
+    "limit": 20,
+    "pages": 1
+  }
+}
+```
+
+---
+
+## 9. Book a Seat / Ride Using a Package Pass
+
+Redeems rides from a purchased pass to book a seat on a scheduled trip. The booking is confirmed immediately with ₹0 additional charge.
+
+- **Method**: `POST`
+- **URL**: `https://oncab.in/bus-operator-dev/api2/bus/create-booking`
+- **Auth**: `Bearer <passenger_access_token>` (Required)
+
+### Request Body
+```json
+{
+  "trip_id": 123,
+  "origin_stop_id": 10,
+  "destination_stop_id": 15,
+  "travel_date": "2026-11-01",
+  "seat_numbers": ["12"],
+  "total_seats": 1,
+  "package_purchase_id": 501,
+  "idempotency_key": "pass-501-trip-123-seat-12-uuid1"
+}
+```
+
+### Important Fields:
+- `package_purchase_id` *(required)*: ID of the active purchased pass.
+- `idempotency_key` *(required)*: A unique client-generated string (up to 100 chars, e.g. UUID). If network drops and the app retries, the server safely returns the already-created booking without deducting duplicate rides.
+- `total_seats` *(required)*: Number of seats. Each seat consumes 1 ride from the pass balance.
+
+### Success Response (`200 OK` / `201 Created`)
+```json
+{
+  "status": 200,
+  "success": true,
+  "message": "Booking created successfully",
+  "data": {
+    "booking_id": 987,
+    "booking_reference": "BK-261101-0987",
+    "passenger_id": 42,
+    "trip_id": 123,
+    "travel_date": "2026-11-01",
+    "origin_stop_id": 10,
+    "destination_stop_id": 15,
+    "seat_numbers": ["12"],
+    "total_seats": 1,
+    "booking_status": "confirmed",
+    "payment_status": "paid",
+    "payment_method": "package",
+    "package_purchase_id": 501,
+    "final_amount": 0,
+    "package_snapshot": {
+      "package_id": 1,
+      "package_code": "TEN-RIDES-PASS",
+      "package_name": "10 Rides Smart Pass",
+      "rides_count": 10,
+      "validity_days": 30,
+      "price_per_ride": 70.00,
+      "final_booking_amount": 0
+    }
+  }
+}
+```
+
+### Error Responses
+- `400 Bad Request`: `{"success": false, "message": "A unique idempotency_key is required for package bookings"}`
+- `400 Bad Request`: `{"success": false, "message": "Passenger package purchase is not valid for this route"}`
+- `409 Conflict`: `{"status": 409, "success": false, "message": "Passenger package purchase does not have enough rides available", "data": {"available_rides": 0, "requested_rides": 1}}`
+- `409 Conflict`: `{"status": 409, "success": false, "message": "Passenger package purchase has expired"}`
+
+---
+
+## 10. Cancel Booking & Restore Reserved Rides
+
+Cancelling a package booking automatically releases the reserved rides back to the passenger's pass balance.
+
+- **Method**: `POST`
+- **URL**: `https://oncab.in/bus-operator-dev/api2/bus/bookings/:bookingId/cancel`
+  *(or `POST https://oncab.in/bus-operator-dev/api2/bus/cancel-booking` with `{"booking_id": 987}`)*
+- **Auth**: `Bearer <passenger_access_token>` (Required)
+
+### Request Body
+```json
+{
+  "cancellation_reason": "Change of travel plans"
+}
+```
+
+### Success Response (`200 OK`)
+```json
+{
+  "status": 200,
+  "success": true,
+  "message": "Booking cancelled successfully. Reserved package ride has been restored to your pass.",
+  "data": {
+    "booking_id": 987,
+    "booking_status": "cancelled",
+    "package_purchase_id": 501,
+    "rides_restored": 1
+  }
+}
+```
+
+---
+
+## 📊 Summary Table of Mobile App Endpoints
+
+| Action | Method | Endpoint URL | Auth Header |
+| :--- | :---: | :--- | :--- |
+| **Browse Packages** | `GET` | `/api2/bus/packages?route_id=:id` | None (Public) |
+| **Package Details** | `GET` | `/api2/bus/packages/:id` | None (Public) |
+| **Buy / Order Package** | `POST` | `/api2/bus/package-purchases` | `Bearer <token>` |
+| **Initiate PayU Checkout** | `POST` | `/api2/bus/payment/payu/initiate` | `Bearer <token>` |
+| **List My Passes & Balance** | `GET` | `/api2/bus/my-packages` | `Bearer <token>` |
+| **Get Single Pass Balance** | `GET` | `/api2/bus/my-packages/:purchaseId` | `Bearer <token>` |
+| **Pass Ride Usage History** | `GET` | `/api2/bus/my-packages/:purchaseId/usage` | `Bearer <token>` |
+| **Pass Payment History** | `GET` | `/api2/bus/my-package-transactions` | `Bearer <token>` |
+| **Book Seat with Pass** | `POST` | `/api2/bus/create-booking` | `Bearer <token>` |
+| **Cancel Booking & Restore Ride** | `POST` | `/api2/bus/bookings/:bookingId/cancel` | `Bearer <token>` |
+
+---
+
+## 🛡️ Critical Business Rules & Logic
+
+1. **Idempotency Key**:
+   - Always supply a unique `idempotency_key` (UUID v4) when calling `/bus/create-booking` with `package_purchase_id`.
+   - If the request times out or disconnects, re-submitting with the same key returns the existing booking without double-debiting rides.
+
+2. **Route Restrictions**:
+   - If a package has `route_id = null`, it can be used on **any** bus route.
+   - If `route_id = 5`, it is restricted to Route #5 only. Attempting to book on Route #6 returns `400 Bad Request`.
+
+3. **Multi-Seat Bookings**:
+   - Booking `total_seats: 2` requires and reserves **2 rides** from the pass.
+   - If the pass only has 1 ride left, the API returns `409 Conflict` (`available_rides: 1, requested_rides: 2`).
+
+4. **Trip Completion & No-Shows**:
+   - When the bus driver completes the trip in the driver app, passenger bookings marked as `boarded` or `no_show` are finalized, and the reserved rides transition permanently to `consumed`.
+   - If a trip is cancelled by the operator/admin, all pending pass reservations for that trip are automatically restored.

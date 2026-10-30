@@ -19,6 +19,7 @@ export const CouponsPage: React.FC<CouponsPageProps> = ({ onNotify }) => {
   const [usageCoupon, setUsageCoupon] = useState<any>(null);
   const [usages, setUsages] = useState<any[]>([]);
   const [usagesLoading, setUsagesLoading] = useState(false);
+  const [usageSearch, setUsageSearch] = useState('');
   const [usagePage, setUsagePage] = useState(1);
   const [usagePagination, setUsagePagination] = useState({ total: 0, pages: 1, limit: 15 });
   const [deleting, setDeleting] = useState(false);
@@ -42,10 +43,10 @@ export const CouponsPage: React.FC<CouponsPageProps> = ({ onNotify }) => {
   const openEdit = (c: any) => { setEditCoupon(c); setForm({ code: c.code, code_type: c.code_type, amount: String(c.amount), max_discount: String(c.max_discount || ''), min_amount: String(c.min_amount || '0'), usage_limit: String(c.usage_limit || ''), per_user_limit: String(c.per_user_limit ?? '1'), per_device_limit: String(c.per_device_limit ?? ''), max_seats: String(c.max_seats ?? ''), start_date: c.start_date || '', end_date: c.end_date || '', description: c.description || '', status: c.status }); setShowModal(true); };
   const f = (k: keyof typeof form) => (v: string) => setForm(prev => ({ ...prev, [k]: v }));
 
-  const loadUsages = async (coupon: any, nextPage: number) => {
+  const loadUsages = async (coupon: any, nextPage: number, searchQuery: string = usageSearch) => {
     setUsagesLoading(true);
     try {
-      const response = await couponsAPI.usages(coupon.id, { page: nextPage, limit: 15 });
+      const response = await couponsAPI.usages(coupon.id, { page: nextPage, limit: 15, search: searchQuery || undefined });
       setUsages(response.data.data);
       setUsagePagination(response.data.pagination);
       setUsagePage(nextPage);
@@ -56,7 +57,8 @@ export const CouponsPage: React.FC<CouponsPageProps> = ({ onNotify }) => {
 
   const openUsages = async (coupon: any) => {
     setUsageCoupon(coupon);
-    await loadUsages(coupon, 1);
+    setUsageSearch('');
+    await loadUsages(coupon, 1, '');
   };
 
   const handleSave = async () => {
@@ -70,11 +72,41 @@ export const CouponsPage: React.FC<CouponsPageProps> = ({ onNotify }) => {
     finally { setSaving(false); }
   };
 
+  const [deleteUsageTarget, setDeleteUsageTarget] = useState<any>(null);
+  const [deletingUsage, setDeletingUsage] = useState(false);
+
   const handleDelete = async () => {
+    if (!deleteTarget) return;
     setDeleting(true);
-    try { await couponsAPI.delete(deleteTarget.id); onNotify('Deleted'); setDeleteTarget(null); fetch(); }
-    catch (e: any) { onNotify(e.response?.data?.message || 'Failed', 'error'); }
-    finally { setDeleting(false); }
+    try {
+      const res = await couponsAPI.delete(deleteTarget.id);
+      onNotify(res.data?.message || 'Coupon deleted and active bookings automatically cancelled');
+      setDeleteTarget(null);
+      if (usageCoupon?.id === deleteTarget.id) {
+        setUsageCoupon(null);
+      }
+      fetch();
+    } catch (e: any) {
+      onNotify(e.response?.data?.message || 'Failed to delete coupon', 'error');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleDeleteUsage = async () => {
+    if (!deleteUsageTarget || !usageCoupon) return;
+    setDeletingUsage(true);
+    try {
+      await couponsAPI.deleteUsage(usageCoupon.id, deleteUsageTarget.id);
+      onNotify('Coupon usage deleted from database and used count updated');
+      setDeleteUsageTarget(null);
+      await loadUsages(usageCoupon, usagePage, usageSearch);
+      fetch();
+    } catch (e: any) {
+      onNotify(e.response?.data?.message || 'Failed to delete coupon usage', 'error');
+    } finally {
+      setDeletingUsage(false);
+    }
   };
 
   const HEADERS = ['Code', 'Type', 'Discount', 'Min Order', 'Used', 'Usage / Seat Caps', 'Expires', 'Status', 'Actions'];
@@ -130,8 +162,13 @@ export const CouponsPage: React.FC<CouponsPageProps> = ({ onNotify }) => {
           </>
         )}
       </Card>
-      <Modal open={showModal} onClose={() => setShowModal(false)} title={editCoupon ? 'Edit Coupon' : 'Create Coupon'}
-        footer={<><Button variant="ghost" onClick={() => setShowModal(false)}>Cancel</Button><Button onClick={handleSave} loading={saving}>{editCoupon ? 'Update' : 'Create'}</Button></>}>
+      <Modal
+        open={showModal}
+        size="lg"
+        onClose={() => setShowModal(false)}
+        title={editCoupon ? 'Edit Coupon' : 'Create Coupon'}
+        footer={<><Button variant="ghost" onClick={() => setShowModal(false)}>Cancel</Button><Button onClick={handleSave} loading={saving}>{editCoupon ? 'Update' : 'Create'}</Button></>}
+      >
         <div className="grid grid-cols-2 gap-4">
           <Input label="Coupon Code" value={form.code} onChange={f('code')} placeholder="WELCOME20" required className="col-span-2" />
           <div className="space-y-1.5"><label className="block text-xs font-medium text-slate-400">Discount Type</label>
@@ -150,26 +187,132 @@ export const CouponsPage: React.FC<CouponsPageProps> = ({ onNotify }) => {
           <Input label="Description" value={form.description} onChange={f('description')} placeholder="Coupon description" className="col-span-2" />
         </div>
       </Modal>
-      <Modal open={!!usageCoupon} onClose={() => setUsageCoupon(null)} title={`Usage · ${usageCoupon?.code || ''}`}>
-        <div className="max-h-[60vh] overflow-auto">
-          {usagesLoading ? <div className="py-10 text-center text-sm text-slate-400">Loading usage...</div> : usages.length === 0 ? <div className="py-10 text-center text-sm text-slate-400">No bookings have used this coupon.</div> : (
-            <Table headers={['Passenger', 'User ID', 'Device ID', 'Booking', 'Discount', 'Used At']}>
-              {usages.map((usage) => (
-                <Tr key={usage.id}>
-                  <Td><div className="text-white text-sm">{usage.passenger?.name || 'Passenger'}</div><div className="text-xs text-slate-500">{usage.passenger?.mobile || ''}</div></Td>
-                  <Td className="text-xs text-slate-300">{usage.passenger_id}</Td>
-                  <Td className="max-w-36 truncate text-xs text-slate-400">{usage.device_id || 'Not supplied'}</Td>
-                  <Td className="text-xs text-slate-300">{usage.booking?.booking_reference || `#${usage.booking_id}`}</Td>
-                  <Td className="text-xs text-emerald-400">₹{usage.discount_amount}</Td>
-                  <Td className="text-xs text-slate-400">{new Date(usage.created_at).toLocaleString()}</Td>
-                </Tr>
-              ))}
-            </Table>
-          )}
-          {!usagesLoading && usagePagination.pages > 1 && <Pagination page={usagePage} pages={usagePagination.pages} total={usagePagination.total} limit={usagePagination.limit} onPageChange={(nextPage) => loadUsages(usageCoupon, nextPage)} />}
+
+      <Modal
+        open={!!usageCoupon}
+        size="xl"
+        onClose={() => setUsageCoupon(null)}
+        title={`Coupon Usages & Redemption History · ${usageCoupon?.code || ''}`}
+      >
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+            <div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">Total Times Redeemed</div>
+              <div className="text-lg font-bold text-slate-900 dark:text-white font-mono">
+                {usagePagination.total} <span className="text-xs text-slate-400 font-normal">used</span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => setDeleteTarget(usageCoupon)}
+              >
+                <Trash2 size={13} />
+                Delete Coupon & All Usages
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <SearchInput
+              value={usageSearch}
+              onChange={(val) => {
+                setUsageSearch(val);
+                loadUsages(usageCoupon, 1, val);
+              }}
+              placeholder="Search passenger name or mobile number..."
+              className="w-full sm:w-80"
+            />
+            {usageSearch && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setUsageSearch('');
+                  loadUsages(usageCoupon, 1, '');
+                }}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+
+          <div className="max-h-[65vh] overflow-auto">
+            {usagesLoading ? (
+              <div className="py-12 text-center text-sm text-slate-400">Loading coupon usage records...</div>
+            ) : usages.length === 0 ? (
+              <div className="py-12 text-center text-sm text-slate-400">
+                {usageSearch ? `No users matching "${usageSearch}" found for this coupon.` : 'No bookings have used this coupon.'}
+              </div>
+            ) : (
+              <Table headers={['Passenger', 'Mobile', 'User ID', 'Booking', 'Discount', 'Used At', 'Action']}>
+                {usages.map((usage) => {
+                  const passengerName = usage.passenger?.name || usage.booking?.passenger_name || 'Passenger';
+                  const passengerMobile = usage.passenger?.mobile || usage.booking?.passenger_mobile || '—';
+                  return (
+                    <Tr key={usage.id}>
+                      <Td>
+                        <div className="text-slate-900 dark:text-white text-sm font-semibold">{passengerName}</div>
+                      </Td>
+                      <Td>
+                        <div className="text-xs text-slate-700 dark:text-slate-300 font-mono">{passengerMobile}</div>
+                      </Td>
+                      <Td className="text-xs text-slate-500 dark:text-slate-400 font-mono">{usage.passenger_id || '—'}</Td>
+                      <Td className="text-xs text-slate-700 dark:text-slate-300">
+                        <div className="font-mono font-medium">{usage.booking?.booking_reference || `#${usage.booking_id}`}</div>
+                        {usage.booking?.travel_date && (
+                          <div className="text-[11px] text-slate-500">{usage.booking.travel_date}</div>
+                        )}
+                      </Td>
+                      <Td className="text-xs text-emerald-600 dark:text-emerald-400 font-bold font-mono">₹{usage.discount_amount}</Td>
+                      <Td className="text-xs text-slate-500 dark:text-slate-400">{new Date(usage.created_at).toLocaleString()}</Td>
+                      <Td>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          title="Delete this usage record"
+                          onClick={() => setDeleteUsageTarget(usage)}
+                        >
+                          <Trash2 size={12} />
+                        </Button>
+                      </Td>
+                    </Tr>
+                  );
+                })}
+              </Table>
+            )}
+            {!usagesLoading && usagePagination.pages > 1 && (
+              <Pagination
+                page={usagePage}
+                pages={usagePagination.pages}
+                total={usagePagination.total}
+                limit={usagePagination.limit}
+                onPageChange={(nextPage) => loadUsages(usageCoupon, nextPage, usageSearch)}
+              />
+            )}
+          </div>
         </div>
       </Modal>
-      <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={handleDelete} title="Delete Coupon" message={`Delete coupon "${deleteTarget?.code}"?`} loading={deleting} />
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={handleDelete}
+        title="Delete Coupon & Reset Usage"
+        message={`Are you sure you want to delete coupon "${deleteTarget?.code}"? Deleting this coupon will permanently remove it, delete its usage records, and automatically cancel all active bookings that redeemed this coupon.`}
+        loading={deleting}
+      />
+
+      <ConfirmDialog
+        open={!!deleteUsageTarget}
+        onClose={() => setDeleteUsageTarget(null)}
+        onConfirm={handleDeleteUsage}
+        title="Delete Coupon Usage"
+        message={`Delete this usage record (#${deleteUsageTarget?.id}) for passenger "${deleteUsageTarget?.passenger?.name || deleteUsageTarget?.booking?.passenger_name || 'Passenger'}"? This will delete the entry from coupon_usages in the database and reduce the coupon used count.`}
+        loading={deletingUsage}
+      />
     </div>
   );
 };

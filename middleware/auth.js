@@ -1,7 +1,7 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
-const { AdminUser, Role, Permission } = require('../models');
+const { AdminUser, AdminSession, Role, Permission } = require('../models');
 const { normalizeRoleName, hasRole } = require('../utils/roles');
 
 const hasPermission = (userPermissions, permission) => {
@@ -44,6 +44,29 @@ const authenticate = async (req, res, next) => {
         success: false,
         message: 'User not found or account deactivated',
       });
+    }
+
+    if (decoded.sid) {
+      const session = await AdminSession.findOne({
+        where: { user_id: user.id, session_token: decoded.sid, is_active: true },
+      });
+
+      if (!session) {
+        return res.status(401).json({
+          success: false,
+          message: 'This session has been signed out or terminated remotely.',
+          code: 'SESSION_REVOKED',
+        });
+      }
+
+      req.session = session;
+      req.sessionToken = decoded.sid;
+
+      // Throttle last activity update to every 2 minutes
+      const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+      if (!session.last_activity_at || session.last_activity_at < twoMinutesAgo) {
+        session.update({ last_activity_at: new Date() }).catch(() => {});
+      }
     }
 
     req.user = user;

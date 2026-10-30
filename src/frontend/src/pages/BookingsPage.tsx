@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { bookingsAPI } from '../services/api';
+import { bookingsAPI, routesAPI, driversAPI, vehiclesAPI, tripsAPI } from '../services/api';
 import { Card, Table, Tr, Td, Pagination, SearchInput, Button, Select, StatusBadge, Modal, ConfirmDialog, ErrorState, Badge } from '../components/ui';
 import { useAuth } from '../contexts/AuthContext';
 import { hasRole } from '../utils/roles';
@@ -164,6 +164,26 @@ export const BookingsPage: React.FC<BookingsPageProps> = ({ onNotify }) => {
   const [search, setSearch] = useState('');
   const [bookingStatusFilter, setBookingStatusFilter] = useState('');
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('');
+
+  // ── Advanced Filters ──────────────────────────────────────
+  const [dateFilter, setDateFilter] = useState<string>('');
+  const [quickDatePreset, setQuickDatePreset] = useState<string>('all');
+  const [routeFilter, setRouteFilter] = useState<string>('');
+  const [vehicleFilter, setVehicleFilter] = useState<string>('');
+  const [driverFilter, setDriverFilter] = useState<string>('');
+
+  // Dropdown options
+  const [routesList, setRoutesList] = useState<any[]>([]);
+  const [vehiclesList, setVehiclesList] = useState<any[]>([]);
+  const [driversList, setDriversList] = useState<any[]>([]);
+
+  // Summary KPI across all matching bookings (not just page limit)
+  const [summary, setSummary] = useState<{
+    total_bookings: number;
+    total_seats: number;
+    total_revenue: string;
+  }>({ total_bookings: 0, total_seats: 0, total_revenue: '0.00' });
+
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState({ total: 0, pages: 1, limit: 15 });
 
@@ -189,25 +209,97 @@ export const BookingsPage: React.FC<BookingsPageProps> = ({ onNotify }) => {
     setTimeout(() => setCopiedCoords(null), 2000);
   };
 
+  // Load dropdown lists for Routes, Vehicles, and Drivers
+  useEffect(() => {
+    const loadOptions = async () => {
+      try {
+        const [rRes, vRes, dRes] = await Promise.allSettled([
+          !isOwner ? routesAPI.list({ limit: 100 }) : Promise.resolve({ data: { data: [] } }),
+          vehiclesAPI.list({ limit: 100 }),
+          driversAPI.list({ limit: 100 }),
+        ]);
+
+        if (rRes.status === 'fulfilled' && rRes.value?.data?.data) {
+          setRoutesList(rRes.value.data.data);
+        }
+        if (vRes.status === 'fulfilled' && vRes.value?.data?.data) {
+          setVehiclesList(vRes.value.data.data);
+        }
+        if (dRes.status === 'fulfilled' && dRes.value?.data?.data) {
+          setDriversList(dRes.value.data.data);
+        }
+      } catch (e) {
+        console.warn('Failed to load filter options:', e);
+      }
+    };
+    loadOptions();
+  }, [isOwner]);
+
+  const getTodayDateStr = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+
+  const getTomorrowDateStr = () => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+
+  const getYesterdayDateStr = () => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+
+  const handleApplyDatePreset = (preset: 'all' | 'today' | 'tomorrow' | 'yesterday') => {
+    setQuickDatePreset(preset);
+    setPage(1);
+    if (preset === 'today') {
+      setDateFilter(getTodayDateStr());
+    } else if (preset === 'tomorrow') {
+      setDateFilter(getTomorrowDateStr());
+    } else if (preset === 'yesterday') {
+      setDateFilter(getYesterdayDateStr());
+    } else {
+      setDateFilter('');
+    }
+  };
+
   const fetchBookings = useCallback(async () => {
     try {
       setLoading(true);
       setError('');
-      const resp = await bookingsAPI.list({
+      const params: any = {
         page,
         limit: 15,
-        search,
-        booking_status: bookingStatusFilter,
-        payment_status: paymentStatusFilter,
-      });
-      setBookings(resp.data.data);
-      setPagination(resp.data.pagination);
+        search: search || undefined,
+        booking_status: bookingStatusFilter || undefined,
+        payment_status: paymentStatusFilter || undefined,
+        date: dateFilter || undefined,
+        route_id: routeFilter || undefined,
+        vehicle_id: vehicleFilter || undefined,
+        driver_id: driverFilter || undefined,
+      };
+
+      const resp = await bookingsAPI.list(params);
+      setBookings(resp.data.data || []);
+      setPagination(resp.data.pagination || { total: 0, pages: 1, limit: 15 });
+      if (resp.data.summary) {
+        setSummary(resp.data.summary);
+      } else {
+        setSummary({
+          total_bookings: resp.data.pagination?.total || 0,
+          total_seats: (resp.data.data || []).reduce((acc: number, b: any) => acc + (b.total_seats || 1), 0),
+          total_revenue: (resp.data.data || []).reduce((acc: number, b: any) => acc + Number(b.final_amount || b.total_fare || 0), 0).toFixed(2),
+        });
+      }
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to load bookings');
     } finally {
       setLoading(false);
     }
-  }, [page, search, bookingStatusFilter, paymentStatusFilter]);
+  }, [page, search, bookingStatusFilter, paymentStatusFilter, dateFilter, routeFilter, vehicleFilter, driverFilter]);
 
   useEffect(() => {
     fetchBookings();
@@ -215,7 +307,7 @@ export const BookingsPage: React.FC<BookingsPageProps> = ({ onNotify }) => {
 
   useEffect(() => {
     setPage(1);
-  }, [search, bookingStatusFilter, paymentStatusFilter]);
+  }, [search, bookingStatusFilter, paymentStatusFilter, dateFilter, routeFilter, vehicleFilter, driverFilter]);
 
   const fetchTracking = useCallback(async (bookingId: number) => {
     try {
@@ -388,46 +480,224 @@ export const BookingsPage: React.FC<BookingsPageProps> = ({ onNotify }) => {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <SearchInput
-          value={search}
-          onChange={setSearch}
-          placeholder="Search reference, pass code, name, mobile, email..."
-        />
-        <Select
-          value={bookingStatusFilter}
-          onChange={setBookingStatusFilter}
-          options={[
-            { value: 'confirmed', label: 'Confirmed' },
-            { value: 'completed', label: 'Completed' },
-            { value: 'pending', label: 'Pending' },
-            ...(!isOwner ? [{ value: 'cancelled', label: 'Cancelled' }] : []),
-          ]}
-          placeholder="All Booking Statuses"
-        />
-        {!isOwner && <Select
-          value={paymentStatusFilter}
-          onChange={setPaymentStatusFilter}
-          options={[
-            { value: 'paid', label: 'Paid' },
-            { value: 'pending', label: 'Pending' },
-            { value: 'failed', label: 'Failed' },
-            { value: 'refunded', label: 'Refunded' },
-          ]}
-          placeholder="Payment Status"
-        />}
-        {(search || bookingStatusFilter || paymentStatusFilter) && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setSearch('');
-              setBookingStatusFilter('');
-              setPaymentStatusFilter('');
+      {/* ── Summary KPI Brief Cards ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">TOTAL BOOKINGS</div>
+          <div className="text-xl font-extrabold text-white mt-1 flex items-baseline gap-1.5 font-mono">
+            {summary.total_bookings}
+            <span className="text-[11px] font-normal text-slate-400 font-sans">orders</span>
+          </div>
+        </div>
+
+        <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">SEATS BOOKED</div>
+          <div className="text-xl font-extrabold text-indigo-400 mt-1 flex items-baseline gap-1.5 font-mono">
+            {summary.total_seats}
+            <span className="text-[11px] font-normal text-slate-400 font-sans">passengers</span>
+          </div>
+        </div>
+
+        {!isOwner && (
+          <div className="p-3.5 rounded-xl bg-indigo-950/40 border border-indigo-800/60 shadow-sm">
+            <div className="text-[11px] font-bold text-indigo-300 uppercase tracking-wider">TOTAL REVENUE</div>
+            <div className="text-xl font-extrabold text-indigo-200 mt-1 font-mono">
+              ₹{summary.total_revenue}
+            </div>
+          </div>
+        )}
+
+        <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">ACTIVE FILTERS</div>
+          <div className="text-sm font-semibold text-slate-300 mt-1 truncate">
+            {dateFilter || routeFilter || vehicleFilter || driverFilter || search || bookingStatusFilter || paymentStatusFilter
+              ? `${[
+                  dateFilter ? `Date: ${dateFilter}` : null,
+                  routeFilter ? 'Route' : null,
+                  vehicleFilter ? 'Vehicle' : null,
+                  driverFilter ? 'Driver' : null,
+                  bookingStatusFilter ? `Status: ${bookingStatusFilter}` : null,
+                  paymentStatusFilter ? `Payment: ${paymentStatusFilter}` : null,
+                ].filter(Boolean).join(' • ')}`
+              : 'Showing all data'}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Advanced Filter Bar ── */}
+      <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-3.5 shadow-sm">
+        {/* Row 1: Quick Date Presets & Date Picker */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div className="flex items-center gap-1.5">
+            <Calendar size={15} className="text-indigo-400 mr-1" />
+            <span className="text-xs font-bold text-slate-300 uppercase tracking-wider mr-2">Travel Date:</span>
+            <button
+              type="button"
+              onClick={() => handleApplyDatePreset('all')}
+              className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                quickDatePreset === 'all' && !dateFilter
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              All Dates
+            </button>
+            <button
+              type="button"
+              onClick={() => handleApplyDatePreset('today')}
+              className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                quickDatePreset === 'today' || dateFilter === getTodayDateStr()
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              Today
+            </button>
+            <button
+              type="button"
+              onClick={() => handleApplyDatePreset('tomorrow')}
+              className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                quickDatePreset === 'tomorrow' || dateFilter === getTomorrowDateStr()
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              Tomorrow
+            </button>
+            <button
+              type="button"
+              onClick={() => handleApplyDatePreset('yesterday')}
+              className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                quickDatePreset === 'yesterday' || dateFilter === getYesterdayDateStr()
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              Yesterday
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400">Custom Date:</span>
+            <input
+              type="date"
+              value={dateFilter}
+              onChange={(e) => {
+                setDateFilter(e.target.value);
+                setQuickDatePreset('custom');
+                setPage(1);
+              }}
+              className="px-2.5 py-1 text-xs bg-slate-800 text-white border border-slate-700 rounded-lg focus:outline-none focus:border-indigo-500 font-mono"
+            />
+          </div>
+        </div>
+
+        {/* Row 2: Multi-dimensional Selects (Search, Route, Vehicle, Driver, Statuses) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder="Search ref, passenger, mobile..."
+            className="w-full"
+          />
+
+          {!isOwner && (
+            <Select
+              value={routeFilter}
+              onChange={(v) => {
+                setRouteFilter(v);
+                setPage(1);
+              }}
+              options={routesList.map((r) => ({
+                value: String(r.id),
+                label: r.route_name || `${r.origin_city} → ${r.destination_city}`,
+              }))}
+              placeholder="All Routes"
+            />
+          )}
+
+          <Select
+            value={vehicleFilter}
+            onChange={(v) => {
+              setVehicleFilter(v);
+              setPage(1);
             }}
-          >
-            Reset Filters
-          </Button>
+            options={vehiclesList.map((veh) => ({
+              value: String(veh.id),
+              label: `${veh.registration_number}${veh.company_model ? ` (${veh.company_model})` : ''}`,
+            }))}
+            placeholder="All Vehicles"
+          />
+
+          <Select
+            value={driverFilter}
+            onChange={(v) => {
+              setDriverFilter(v);
+              setPage(1);
+            }}
+            options={driversList.map((d) => ({
+              value: String(d.id),
+              label: `${d.name}${d.mobile ? ` (${d.mobile})` : ''}`,
+            }))}
+            placeholder="All Drivers"
+          />
+
+          <Select
+            value={bookingStatusFilter}
+            onChange={(v) => {
+              setBookingStatusFilter(v);
+              setPage(1);
+            }}
+            options={[
+              { value: 'confirmed', label: 'Confirmed' },
+              { value: 'completed', label: 'Completed' },
+              { value: 'pending', label: 'Pending' },
+              ...(!isOwner ? [{ value: 'cancelled', label: 'Cancelled' }] : []),
+            ]}
+            placeholder="Booking Status"
+          />
+
+          {!isOwner && (
+            <Select
+              value={paymentStatusFilter}
+              onChange={(v) => {
+                setPaymentStatusFilter(v);
+                setPage(1);
+              }}
+              options={[
+                { value: 'paid', label: 'Paid' },
+                { value: 'pending', label: 'Pending' },
+                { value: 'failed', label: 'Failed' },
+                { value: 'refunded', label: 'Refunded' },
+              ]}
+              placeholder="Payment Status"
+            />
+          )}
+        </div>
+
+        {/* Active filter reset button */}
+        {(search || dateFilter || routeFilter || vehicleFilter || driverFilter || bookingStatusFilter || paymentStatusFilter) && (
+          <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
+            <span className="text-xs text-slate-400">
+              Showing filtered results ({pagination.total} matching bookings)
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSearch('');
+                setDateFilter('');
+                setQuickDatePreset('all');
+                setRouteFilter('');
+                setVehicleFilter('');
+                setDriverFilter('');
+                setBookingStatusFilter('');
+                setPaymentStatusFilter('');
+              }}
+            >
+              Reset All Filters
+            </Button>
+          </div>
         )}
       </div>
 

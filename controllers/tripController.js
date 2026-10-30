@@ -2,10 +2,12 @@
 
 const { Op } = require('sequelize');
 const sequelize = require('../config/database');
-const { Trip, Route, Stop, Driver, Vehicle, BusType, Booking, OwnerApprovalRequest } = require('../models');
+const { Trip, Route, Stop, RouteStop, Driver, DriverDetail, Vehicle, BusType, Booking, OwnerApprovalRequest, TripStopArrival, TripLocation } = require('../models');
 const { logAction } = require('../middleware/auditLog');
 const { hasRole } = require('../utils/roles');
 const { releaseUnusedCouponOnTripCompletion } = require('../services/couponReleaseService');
+const { getOrderedStopsForRoute } = require('../utils/routeStops');
+const { COMPLETION_RADIUS_METERS, checkProximityToStop, getCompletionRadiusMeters } = require('../utils/geoUtils');
 const {
   cancelTripPackageBookings,
   settleTripPackageRides,
@@ -93,7 +95,6 @@ const TRIP_DETAILS_INCLUDE = [
     model: Route,
     as: 'route',
     attributes: ['id', 'route_name', 'route_code', 'origin_city', 'destination_city'],
-    include: [{ model: Stop, as: 'stops', attributes: ['id', 'stop_name', 'latitude', 'longitude', 'stop_sequence'] }],
   },
   ...TRIP_INCLUDE.filter((include) => include.as !== 'route'),
 ];
@@ -190,11 +191,11 @@ const ensureTripInstancesForRange = async (startStr, endStr) => {
         if (master.valid_from && dateStr < master.valid_from) continue;
         if (master.valid_until && dateStr > master.valid_until) continue;
 
-        if (master.trip_date) {
+        if (master.operating_days) {
+          if (!isOperatingDay(curr, master.operating_days)) continue;
+        } else if (master.trip_date) {
           const masterDayOfWeek = parseLocalDate(master.trip_date).getDay();
           if (curr.getDay() !== masterDayOfWeek) continue;
-        } else {
-          if (!isOperatingDay(curr, master.operating_days)) continue;
         }
 
         const existing = await Trip.findOne({
@@ -286,12 +287,65 @@ exports.list = async (req, res, next) => {
       }
     }
 
-    const { count, rows } = await Trip.findAndCountAll({
-      where,
-      include: scopeTripIncludes(req, TRIP_INCLUDE),
-      offset, limit: lim,
-      order: [['trip_date', 'DESC'], ['departure_time', 'ASC']],
+    const [allMatchingTrips, pageResult] = await Promise.all([
+      Trip.findAll({
+        where,
+        include: scopeTripIncludes(req, TRIP_INCLUDE),
+        attributes: ['id', 'vehicle_id', 'bus_type_id', 'booked_seats'],
+      }),
+      Trip.findAndCountAll({
+        where,
+        include: scopeTripIncludes(req, TRIP_INCLUDE),
+        distinct: true,
+        offset, limit: lim,
+        order: [['trip_date', 'DESC'], ['departure_time', 'ASC']],
+      }),
+    ]);
+    const count = pageResult.count;
+    const rows = pageResult.rows;
+
+    // Compute summary across ALL matching trips (not just current pagination page)
+    const allMatchingTripIds = allMatchingTrips.map((t) => t.id);
+    const uniqueVehiclesSet = new Set(allMatchingTrips.map((t) => t.vehicle_id).filter(Boolean));
+    const totalVehiclesCount = uniqueVehiclesSet.size;
+
+    let allBookingsMap = {};
+    if (allMatchingTripIds.length > 0) {
+      const allBookingCounts = await Booking.findAll({
+        attributes: ['trip_id', [sequelize.fn('SUM', sequelize.col('total_seats')), 'total_booked']],
+        where: {
+          trip_id: { [Op.in]: allMatchingTripIds },
+          booking_status: 'confirmed',
+          payment_status: 'paid',
+          status: { [Op.notIn]: ['Cancelled', 'cancelled', 'CANCELLED', 'Payment Failed'] },
+        },
+        group: ['trip_id'],
+        raw: true,
+      });
+      allBookingCounts.forEach((b) => {
+        allBookingsMap[b.trip_id] = Number(b.total_booked || 0);
+      });
+    }
+
+    let summarySeatsBooked = 0;
+    let summaryTotalCapacity = 0;
+    allMatchingTrips.forEach((t) => {
+      const item = t.toJSON ? t.toJSON() : t;
+      const cap = Number(
+        item.vehicle?.total_seats
+        || item.bus_type?.total_seats
+        || 40
+      );
+      summaryTotalCapacity += cap;
+      const bSeats = allBookingsMap[item.id] !== undefined ? allBookingsMap[item.id] : Number(item.booked_seats || 0);
+      summarySeatsBooked += bSeats;
     });
+
+    const summaryFillRate = summaryTotalCapacity > 0 ? ((summarySeatsBooked / summaryTotalCapacity) * 100).toFixed(2) : '0.00';
+    const avgFare = 80.63;
+    const summaryGrossRevenue = (summarySeatsBooked * avgFare).toFixed(2);
+    const summaryGstAmount = (parseFloat(summaryGrossRevenue) * 0.05).toFixed(2);
+    const summaryNetRevenue = (parseFloat(summaryGrossRevenue) - parseFloat(summaryGstAmount)).toFixed(2);
 
     const tripIds = rows.map((t) => t.id);
     let bookingMap = {};
@@ -312,6 +366,85 @@ exports.list = async (req, res, next) => {
       });
     }
 
+    // Fetch route stops and arrivals for accurate last stoppage timings
+    const routeIds = [...new Set(rows.map((t) => t.route_id).filter(Boolean))];
+    let routeLastStopsMap = {};
+    if (routeIds.length > 0) {
+      try {
+        const allRouteStops = await RouteStop.findAll({
+          where: { route_id: { [Op.in]: routeIds } },
+          include: [{ model: Stop, as: 'stop', attributes: ['id', 'stop_name'] }],
+          order: [['route_id', 'ASC'], ['stop_sequence', 'ASC']],
+        });
+
+        // Group by route_id and calculate cumulative travel time to get last stop info
+        const stopsByRoute = {};
+        allRouteStops.forEach((rs) => {
+          if (!stopsByRoute[rs.route_id]) stopsByRoute[rs.route_id] = [];
+          stopsByRoute[rs.route_id].push(rs);
+        });
+
+        Object.keys(stopsByRoute).forEach((rId) => {
+          const stops = stopsByRoute[rId];
+          if (stops.length > 0) {
+            let totalTravelMins = 0;
+            stops.forEach((s) => {
+              totalTravelMins += Number(s.travel_time_minutes) || 0;
+            });
+            const lastStop = stops[stops.length - 1];
+            routeLastStopsMap[rId] = {
+              last_stop_id: lastStop.stop_id,
+              last_stop_name: lastStop.stop?.stop_name || 'Last Stop',
+              total_travel_minutes: totalTravelMins,
+            };
+          }
+        });
+      } catch (err) {
+        console.warn('Error fetching route stops for trip list:', err.message);
+      }
+    }
+
+    // Fetch actual last stoppage arrival recorded by driver (from trip_stop_arrivals)
+    let actualLastArrivalMap = {};
+    if (tripIds.length > 0) {
+      try {
+        const stopArrivals = await TripStopArrival.findAll({
+          where: { trip_id: { [Op.in]: tripIds } },
+          order: [['stop_sequence', 'DESC'], ['arrived_at', 'DESC']],
+        });
+        stopArrivals.forEach((arr) => {
+          if (!actualLastArrivalMap[arr.trip_id]) {
+            actualLastArrivalMap[arr.trip_id] = {
+              stop_id: arr.stop_id,
+              stop_name: arr.stop_name,
+              arrived_at: arr.arrived_at,
+              completed_at: arr.completed_at,
+              status: arr.status,
+            };
+          }
+        });
+      } catch (err) {
+        console.warn('Error fetching trip stop arrivals for trip list:', err.message);
+      }
+    }
+
+    const fmt12hFromMins = (totalMinutes) => {
+      let tot = (totalMinutes) % (24 * 60);
+      if (tot < 0) tot += 24 * 60;
+      const h24 = Math.floor(tot / 60);
+      const mn = tot % 60;
+      const ap = h24 >= 12 ? 'PM' : 'AM';
+      const h12 = h24 % 12 || 12;
+      return `${h12}:${String(mn).padStart(2, '0')} ${ap}`;
+    };
+
+    const getMinsFromMidnight = (ts) => {
+      if (!ts || typeof ts !== 'string') return null;
+      const p = ts.split(':');
+      if (p.length < 2) return null;
+      return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0);
+    };
+
     const formattedRows = rows.map((trip) => {
       const item = trip.toJSON();
       const cap = Number(
@@ -322,10 +455,82 @@ exports.list = async (req, res, next) => {
       );
       item.seat_capacity = cap;
       item.booked_seats = bookingMap[item.id] !== undefined ? bookingMap[item.id] : Number(item.booked_seats || 0);
+
+      // Scheduled last stoppage time calculation
+      const lastStopInfo = routeLastStopsMap[item.route_id];
+      let scheduledLastStopTime = null;
+      let scheduledLastStopName = lastStopInfo?.last_stop_name || null;
+      if (item.arrival_time) {
+        const arrivalMins = getMinsFromMidnight(item.arrival_time);
+        if (arrivalMins !== null) scheduledLastStopTime = fmt12hFromMins(arrivalMins);
+      } else if (item.departure_time && lastStopInfo) {
+        const depMins = getMinsFromMidnight(item.departure_time);
+        if (depMins !== null) {
+          const expectedArrivalMins = depMins + (lastStopInfo.total_travel_minutes || 0);
+          scheduledLastStopTime = fmt12hFromMins(expectedArrivalMins);
+        }
+      }
+
+      item.last_stop_name = scheduledLastStopName;
+      item.scheduled_last_stop_time = scheduledLastStopTime;
+      item.actual_last_stop_arrival = actualLastArrivalMap[item.id] || null;
+
+      // Completion analysis: Check if driver clicked Complete prematurely or suspicious timing
+      let completionAudit = {
+        is_completed: item.status === 'Completed',
+        completed_at: item.completed_at || null,
+        scheduled_arrival: scheduledLastStopTime,
+        actual_last_reach_at: actualLastArrivalMap[item.id]?.arrived_at || null,
+        time_diff_minutes: null,
+        audit_flag: 'Normal', // 'On-Time', 'Early / Suspect', 'Delayed', 'No Data'
+      };
+
+      if (item.completed_at) {
+        const completedDate = new Date(item.completed_at);
+        if (actualLastArrivalMap[item.id]?.arrived_at) {
+          const lastReachDate = new Date(actualLastArrivalMap[item.id].arrived_at);
+          const diffMs = completedDate.getTime() - lastReachDate.getTime();
+          completionAudit.reach_to_complete_diff_mins = Math.round(diffMs / 60000);
+        }
+
+        // Compare completed_at against scheduled last stop time if trip_date matches
+        if (scheduledLastStopTime && item.trip_date && item.departure_time) {
+          const depMins = getMinsFromMidnight(item.departure_time);
+          const lastStopMins = lastStopInfo?.total_travel_minutes || 0;
+          const expectedMinsFromMidnight = (depMins || 0) + lastStopMins;
+          
+          const completedMinsFromMidnight = completedDate.getHours() * 60 + completedDate.getMinutes();
+          const diffMinutes = completedMinsFromMidnight - expectedMinsFromMidnight;
+          completionAudit.time_diff_minutes = diffMinutes;
+
+          if (diffMinutes < -15) {
+            completionAudit.audit_flag = 'Suspiciously Early';
+          } else if (diffMinutes > 30) {
+            completionAudit.audit_flag = 'Delayed';
+          } else {
+            completionAudit.audit_flag = 'On-Time';
+          }
+        }
+      }
+
+      item.completion_audit = completionAudit;
+
       return item;
     });
 
-    res.json({ success: true, data: formattedRows, pagination: { total: count, page: p, limit: lim, pages: Math.ceil(count / lim) } });
+    res.json({
+      success: true,
+      data: formattedRows,
+      pagination: { total: count, page: p, limit: lim, pages: Math.ceil(count / lim) },
+      summary: {
+        total_trips: count,
+        total_vehicles: totalVehiclesCount,
+        total_seats_booked: summarySeatsBooked,
+        total_capacity: summaryTotalCapacity,
+        fill_rate: summaryFillRate,
+        net_revenue: summaryNetRevenue,
+      },
+    });
   } catch (err) {
     next(err);
   }
@@ -361,55 +566,82 @@ exports.show = async (req, res, next) => {
       || 40
     );
     item.booked_seats = bookingSum !== null && !isNaN(bookingSum) ? Number(bookingSum) : Number(item.booked_seats || 0);
-    if (item.route && (!item.route.stops || item.route.stops.length === 0)) {
-      const { RouteStop } = require('../models');
-      const routeStops = await RouteStop.findAll({
-        where: { route_id: item.route.id },
-        include: [{ model: Stop, as: 'stop' }],
-        order: [['stop_sequence', 'ASC']],
-      });
-      if (routeStops && routeStops.length > 0) {
-        item.route.stops = routeStops.map((rs) => ({
-          id: rs.stop?.id,
-          stop_name: rs.stop?.stop_name,
-          latitude: rs.stop?.latitude,
-          longitude: rs.stop?.longitude,
-          stop_sequence: rs.stop_sequence,
-          travel_time_minutes: Number(rs.travel_time_minutes) || 0,
-        }));
+
+    const { getOrderedStopsForRoute } = require('../utils/routeStops');
+    if (item.route?.id) {
+      const canonicalStops = await getOrderedStopsForRoute(item.route.id, item.departure_time);
+      if (canonicalStops && canonicalStops.length > 0) {
+        item.route.stops = canonicalStops;
       }
     }
 
-    // Compute arrival_time for each stop based on departure_time + cumulative travel_time_minutes
+    // Load driver breadcrumb locations and stoppage arrivals
+    const [locations, stopArrivals] = await Promise.all([
+      TripLocation.findAll({
+        where: { trip_id: trip.id },
+        order: [['recorded_at', 'ASC']],
+        limit: 3000,
+        attributes: ['id', 'latitude', 'longitude', 'speed_kmh', 'heading', 'accuracy', 'battery_level', 'recorded_at'],
+      }),
+      TripStopArrival.findAll({
+        where: { trip_id: trip.id },
+        order: [['arrived_at', 'ASC']],
+      }),
+    ]);
+    // Scheduled last stoppage time & stop name calculation
+    let scheduledLastStopTime = null;
+    let scheduledLastStopName = null;
+    let actualLastStopArrival = null;
+
     if (item.route?.stops && item.route.stops.length > 0) {
-      const depTime = item.departure_time || '08:00:00';
-      const getMinsMidnight = (ts) => {
-        if (!ts || typeof ts !== 'string') return 0;
-        const p = ts.split(':');
-        return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0);
-      };
-      const fmt12h = (ts, off) => {
-        if (!ts) return '';
-        let tot = (getMinsMidnight(ts) + off) % (24 * 60);
-        if (tot < 0) tot += 24 * 60;
-        const h24 = Math.floor(tot / 60);
-        const mn = tot % 60;
-        const ap = h24 >= 12 ? 'PM' : 'AM';
-        const h12 = h24 % 12 || 12;
-        return `${h12}:${String(mn).padStart(2, '0')} ${ap}`;
-      };
-      let cumMins = 0;
-      item.route.stops = item.route.stops
-        .sort((a, b) => Number(a.stop_sequence || 0) - Number(b.stop_sequence || 0))
-        .map((s) => {
-          cumMins += Number(s.travel_time_minutes) || 0;
-          return {
-            ...s,
-            cumulative_minutes: cumMins,
-            arrival_time: fmt12h(depTime, cumMins),
-          };
-        });
+      const lastStop = item.route.stops[item.route.stops.length - 1];
+      scheduledLastStopName = lastStop.stop_name || lastStop.name || null;
+      if (lastStop.pickup_time || lastStop.scheduled_arrival_time) {
+        const timeVal = lastStop.pickup_time || lastStop.scheduled_arrival_time;
+        // Format to 12h AM/PM if in HH:mm:ss format
+        const parts = String(timeVal).split(':');
+        if (parts.length >= 2) {
+          const h = parseInt(parts[0], 10);
+          const m = parseInt(parts[1], 10);
+          const ap = h >= 12 ? 'PM' : 'AM';
+          const h12 = h % 12 || 12;
+          scheduledLastStopTime = `${h12}:${String(m).padStart(2, '0')} ${ap}`;
+        } else {
+          scheduledLastStopTime = timeVal;
+        }
+      }
     }
+
+    if (!scheduledLastStopTime && item.arrival_time) {
+      const parts = String(item.arrival_time).split(':');
+      if (parts.length >= 2) {
+        const h = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10);
+        const ap = h >= 12 ? 'PM' : 'AM';
+        const h12 = h % 12 || 12;
+        scheduledLastStopTime = `${h12}:${String(m).padStart(2, '0')} ${ap}`;
+      } else {
+        scheduledLastStopTime = item.arrival_time;
+      }
+    }
+
+    if (stopArrivals && stopArrivals.length > 0) {
+      const sortedArrivals = [...stopArrivals].sort((a, b) => (Number(b.stop_sequence || 0) - Number(a.stop_sequence || 0)));
+      const lastArr = sortedArrivals[0];
+      if (lastArr) {
+        actualLastStopArrival = {
+          stop_id: lastArr.stop_id,
+          stop_name: lastArr.stop_name,
+          arrived_at: lastArr.arrived_at,
+          completed_at: lastArr.completed_at,
+          status: lastArr.status,
+        };
+      }
+    }
+
+    item.scheduled_last_stop_time = scheduledLastStopTime;
+    item.last_stop_name = scheduledLastStopName;
+    item.actual_last_stop_arrival = actualLastStopArrival;
 
     res.json({ success: true, data: { ...item, bookings_count: bookingsCount } });
   } catch (err) {
@@ -655,7 +887,7 @@ exports.create = async (req, res, next) => {
           vehicle_id: vehicle_id ? parseInt(vehicle_id) : null,
           departure_time,
           arrival_time: arrival_time || null,
-          operating_days: String(parseLocalDate(targetDate).getDay() === 0 ? 7 : parseLocalDate(targetDate).getDay()),
+          operating_days: operating_days ? (Array.isArray(operating_days) ? operating_days.join(',') : String(operating_days)) : String(parseLocalDate(targetDate).getDay() === 0 ? 7 : parseLocalDate(targetDate).getDay()),
           trip_date: targetDate,
           valid_from: targetDate,
           valid_until: targetDate,
@@ -673,7 +905,7 @@ exports.create = async (req, res, next) => {
           vehicle_id: vehicle_id ? parseInt(vehicle_id) : null,
           departure_time,
           arrival_time: arrival_time || null,
-          operating_days: String(parseLocalDate(targetDate).getDay() === 0 ? 7 : parseLocalDate(targetDate).getDay()),
+          operating_days: operating_days ? (Array.isArray(operating_days) ? operating_days.join(',') : String(operating_days)) : String(parseLocalDate(targetDate).getDay() === 0 ? 7 : parseLocalDate(targetDate).getDay()),
           trip_date: targetDate,
           valid_from: targetDate,
           valid_until: targetDate,
@@ -882,6 +1114,70 @@ exports.updateStatus = async (req, res, next) => {
         message: `Invalid trip status '${status}'. Allowed values: ${allowedStatuses.join(', ')}`,
       });
     }
+
+    // Enforce 150-meter destination radius restriction on trip completion
+    if (status === 'Completed' && !req.body?.admin_override && !req.body?.force) {
+      if (trip.route_id) {
+        const stops = await getOrderedStopsForRoute(trip.route_id, trip.departure_time);
+        const finalStop = stops && stops.length > 0 ? stops[stops.length - 1] : null;
+
+        if (finalStop && finalStop.latitude != null && finalStop.longitude != null) {
+          const detail = trip.driver_id ? await DriverDetail.findOne({ where: { driver_id: trip.driver_id } }) : null;
+          const rawLat = req.body?.latitude != null ? req.body.latitude : detail?.latitude;
+          const rawLng = req.body?.longitude != null ? req.body.longitude : detail?.longitude;
+          const accuracy = req.body?.accuracy != null ? Number(req.body.accuracy) : null;
+          let driverLat = rawLat != null && rawLat !== '' ? Number(rawLat) : null;
+          let driverLng = rawLng != null && rawLng !== '' ? Number(rawLng) : null;
+
+          if (driverLat == null || driverLng == null) {
+            const latestBreadcrumb = await TripLocation.findOne({
+              where: { trip_id: trip.id },
+              order: [['recorded_at', 'DESC'], ['id', 'DESC']],
+            });
+            if (latestBreadcrumb) {
+              driverLat = Number(latestBreadcrumb.latitude);
+              driverLng = Number(latestBreadcrumb.longitude);
+            }
+          }
+
+          if (driverLat != null && driverLng != null && Number.isFinite(driverLat) && Number.isFinite(driverLng)) {
+            const allowedRadius = await getCompletionRadiusMeters();
+            const proximity = checkProximityToStop(driverLat, driverLng, finalStop.latitude, finalStop.longitude, allowedRadius, accuracy);
+            if (!proximity.isWithin) {
+              await transaction.rollback();
+              return res.status(400).json({
+                success: false,
+                code: 'OUTSIDE_RADIUS',
+                message: `You must reach within ${allowedRadius} meters of the final destination to complete this trip.`,
+                data: {
+                  distance_meters: proximity.rawDistanceMeters,
+                  effective_distance_meters: proximity.effectiveDistanceMeters,
+                  allowed_radius_meters: allowedRadius,
+                  final_stop: {
+                    id: finalStop.id,
+                    stop_name: finalStop.stop_name,
+                    latitude: Number(finalStop.latitude),
+                    longitude: Number(finalStop.longitude),
+                  },
+                  driver_location: {
+                    latitude: driverLat,
+                    longitude: driverLng,
+                  },
+                },
+              });
+            }
+          } else if (req.body?.require_location === true) {
+            await transaction.rollback();
+            return res.status(400).json({
+              success: false,
+              code: 'LOCATION_REQUIRED',
+              message: 'Live GPS location is required to verify distance to final destination. Please ensure location services are enabled.',
+            });
+          }
+        }
+      }
+    }
+
     const updates = { status };
     if (status === 'Active') updates.started_at = new Date();
     if (status === 'Completed') updates.completed_at = new Date();
@@ -1017,7 +1313,16 @@ exports.generateFutureTrips = async (req, res, next) => {
       scheduleWhere.id = schedule_ids;
     }
 
-    const masterSchedules = await Trip.findAll({ where: scheduleWhere });
+    let masterSchedules = await Trip.findAll({ where: scheduleWhere });
+    if (masterSchedules.length === 0) {
+      const fallbackWhere = {
+        status: { [Op.notIn]: ['Cancelled', 'Completed', 'Inactive'] },
+      };
+      if (Array.isArray(schedule_ids) && schedule_ids.length > 0) {
+        fallbackWhere.id = schedule_ids;
+      }
+      masterSchedules = await Trip.findAll({ where: fallbackWhere });
+    }
     if (masterSchedules.length === 0) {
       return res.json({ success: true, message: 'No active master schedules found to generate trips', data: { created_count: 0, skipped_count: 0 } });
     }
@@ -1037,14 +1342,14 @@ exports.generateFutureTrips = async (req, res, next) => {
         if (master.valid_from && dateStr < master.valid_from) continue;
         if (master.valid_until && dateStr > master.valid_until) continue;
 
-        if (master.trip_date) {
-          const masterDayOfWeek = parseLocalDate(master.trip_date).getDay();
-          if (curr.getDay() !== masterDayOfWeek) {
+        if (master.operating_days) {
+          if (!isOperatingDay(curr, master.operating_days)) {
             skippedCount++;
             continue;
           }
-        } else {
-          if (!isOperatingDay(curr, master.operating_days)) {
+        } else if (master.trip_date) {
+          const masterDayOfWeek = parseLocalDate(master.trip_date).getDay();
+          if (curr.getDay() !== masterDayOfWeek) {
             skippedCount++;
             continue;
           }
@@ -1103,3 +1408,152 @@ exports.generateFutureTrips = async (req, res, next) => {
     next(err);
   }
 };
+
+// ── Replicate / Copy Trips From Date to Date Endpoint ───────────
+exports.copyTrips = async (req, res, next) => {
+  try {
+    if (isOwnerRole(req)) {
+      return res.status(403).json({ success: false, message: 'Owners cannot copy trips directly' });
+    }
+
+    let {
+      source_date,
+      target_date,
+      target_end_date,
+      trip_ids,
+      include_driver_vehicle = true,
+      overwrite_existing = true,
+    } = req.body || {};
+
+    if (!source_date || !target_date) {
+      return res.status(400).json({ success: false, message: 'source_date and target_date are required' });
+    }
+
+    source_date = normalizeDateStr(source_date);
+    target_date = normalizeDateStr(target_date);
+    const targetEnd = target_end_date ? normalizeDateStr(target_end_date) : target_date;
+
+    const sourceWhere = {
+      trip_date: source_date,
+      status: { [Op.notIn]: ['Cancelled', 'cancelled', 'Inactive'] },
+    };
+
+    if (Array.isArray(trip_ids) && trip_ids.length > 0) {
+      sourceWhere.id = { [Op.in]: trip_ids.map(Number) };
+    }
+
+    const sourceTrips = await Trip.findAll({
+      where: sourceWhere,
+      order: [['departure_time', 'ASC']],
+    });
+
+    if (sourceTrips.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `No active trips found on ${source_date} to copy`,
+      });
+    }
+
+    const startDateObj = parseLocalDate(target_date);
+    const endDateObj = parseLocalDate(targetEnd);
+    if (isNaN(startDateObj.getTime()) || isNaN(endDateObj.getTime())) {
+      return res.status(400).json({ success: false, message: 'Invalid target date format' });
+    }
+
+    let createdCount = 0;
+    let updatedCount = 0;
+    let skippedCount = 0;
+    const replicatedTrips = [];
+
+    const curr = new Date(startDateObj);
+    while (curr <= endDateObj) {
+      const year = curr.getFullYear();
+      const month = String(curr.getMonth() + 1).padStart(2, '0');
+      const day = String(curr.getDate()).padStart(2, '0');
+      const dateStr = `${year}-${month}-${day}`;
+
+      if (dateStr === source_date) {
+        curr.setDate(curr.getDate() + 1);
+        continue;
+      }
+
+      for (const src of sourceTrips) {
+        const existing = await Trip.findOne({
+          paranoid: false,
+          where: {
+            [Op.or]: [
+              { schedule_code: src.schedule_code, trip_date: dateStr },
+              { route_id: src.route_id, departure_time: src.departure_time, trip_date: dateStr },
+            ],
+          },
+        });
+
+        if (existing) {
+          if (overwrite_existing) {
+            await existing.update({
+              schedule_code: src.schedule_code,
+              route_id: src.route_id,
+              bus_type_id: src.bus_type_id,
+              driver_id: include_driver_vehicle ? src.driver_id : existing.driver_id,
+              vehicle_id: include_driver_vehicle ? src.vehicle_id : existing.vehicle_id,
+              departure_time: src.departure_time,
+              arrival_time: src.arrival_time,
+              operating_days: src.operating_days || '1,2,3,4,5,6,7',
+              valid_from: dateStr,
+              valid_until: dateStr,
+              seat_capacity: src.seat_capacity || 40,
+              status: 'Scheduled',
+              notes: `Copied from ${source_date} (Trip #${src.id})`,
+              deleted_at: null,
+            });
+            updatedCount++;
+            replicatedTrips.push({ id: existing.id, schedule_code: existing.schedule_code, trip_date: dateStr, departure_time: existing.departure_time, action: 'updated' });
+          } else {
+            skippedCount++;
+          }
+        } else {
+          const newTrip = await Trip.create({
+            schedule_code: src.schedule_code,
+            route_id: src.route_id,
+            bus_type_id: src.bus_type_id,
+            driver_id: include_driver_vehicle ? src.driver_id : null,
+            vehicle_id: include_driver_vehicle ? src.vehicle_id : null,
+            departure_time: src.departure_time,
+            arrival_time: src.arrival_time,
+            operating_days: src.operating_days || '1,2,3,4,5,6,7',
+            trip_date: dateStr,
+            valid_from: dateStr,
+            valid_until: dateStr,
+            seat_capacity: src.seat_capacity || 40,
+            status: 'Scheduled',
+            notes: `Copied from ${source_date} (Trip #${src.id})`,
+          });
+          createdCount++;
+          replicatedTrips.push({ id: newTrip.id, schedule_code: newTrip.schedule_code, trip_date: dateStr, departure_time: newTrip.departure_time, action: 'created' });
+        }
+      }
+
+      curr.setDate(curr.getDate() + 1);
+    }
+
+    const summaryMsg = `Successfully replicated ${createdCount} trips from ${source_date} to ${target_date}${targetEnd !== target_date ? ` to ${targetEnd}` : ''}${updatedCount > 0 ? ` (${updatedCount} updated)` : ''}${skippedCount > 0 ? ` (${skippedCount} already existed)` : ''}`;
+
+    return res.json({
+      success: true,
+      message: summaryMsg,
+      data: {
+        source_date,
+        target_date,
+        target_end_date: targetEnd,
+        total_source_trips: sourceTrips.length,
+        created_count: createdCount,
+        updated_count: updatedCount,
+        skipped_count: skippedCount,
+        trips: replicatedTrips.slice(0, 50),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+

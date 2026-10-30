@@ -34,6 +34,7 @@ const payuRoutes = require('../routes/payuRoutes');
 const ownerKycRoutes = require('../routes/ownerKycRoutes');
 const settlementRoutes = require('../routes/settlementRoutes');
 const shuttleRoutes = require('../routes/shuttleRoutes');
+const crossConnectionRoutes = require('../routes/crossConnectionRoutes');
 
 
 const app = express();
@@ -93,6 +94,7 @@ app.use('/api2/owner-settlements', settlementRoutes);
 app.use('/api2/settlements', settlementRoutes);
 app.use('/api2/shuttle', shuttleRoutes);
 app.use('/api/shuttle', shuttleRoutes);
+app.use('/api2/cross-connections', crossConnectionRoutes);
 app.use('/api2', otherRoutes);
 
 // ── SPA Fallback ─────────────────────────────────────────────
@@ -108,7 +110,7 @@ app.use(notFound);
 app.use(errorHandler);
 
 // ── Start Server ─────────────────────────────────────────────
-const { ensureTripsIndex, ensureTripLocationsTable, ensureTripStopArrivalsTable, ensureOwnerKycTable, ensureOwnerSettlementsTable, ensureRidePackagesTable, ensureBookingPackageColumns, ensurePassengerPackageTables, ensureDefaultPermissions } = require('../utils/dbIndexMigrator');
+const { ensureTripsIndex, ensureTripLocationsTable, ensureTripStopArrivalsTable, ensureOwnerKycTable, ensureOwnerSettlementsTable, ensureRidePackagesTable, ensureBookingPackageColumns, ensurePassengerPackageTables, ensureDefaultPermissions, ensureAdminSessionsTable, ensureCrossConnectionsTable } = require('../utils/dbIndexMigrator');
 const { syncRouteStopsTable } = require('../utils/routeStopMigrator');
 const { startTripLocationPurgeJob } = require('../services/tripLocationPurgeService');
 
@@ -127,6 +129,8 @@ const startServer = async () => {
     await ensureBookingPackageColumns();
     await ensurePassengerPackageTables();
     await ensureDefaultPermissions();
+    await ensureAdminSessionsTable();
+    await ensureCrossConnectionsTable();
     // Start automatic retention purge for trip driver locations (>= 48h data kept)
     startTripLocationPurgeJob();
     // Sync models (use migrations in production)
