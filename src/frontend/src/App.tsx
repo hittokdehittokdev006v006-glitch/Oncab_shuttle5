@@ -362,6 +362,18 @@ const OwnerSettlementsPage = React.lazy(() =>
   }))
 );
 
+const OwnerWeeklyPaymentReportPage = React.lazy(() =>
+  import('./pages/OwnerWeeklyPaymentReportPage').then(m => ({
+    default: m.OwnerWeeklyPaymentReportPage
+  }))
+);
+
+const OwnerPayoutRatesPage = React.lazy(() =>
+  import('./pages/OwnerPayoutRatesPage').then(m => ({
+    default: m.OwnerPayoutRatesPage
+  }))
+);
+
 const SettingsPage = React.lazy(() =>
   import('./pages/SettingsPage').then(m => ({
     default: m.SettingsPage
@@ -460,6 +472,8 @@ const VALID_VIEWS: View[] = [
   'paid-refunds',
   'notifications',
   'reports',
+  'owner-weekly-payment-report',
+  'owner-payout-rates',
   'audit-logs',
   'owner-requests',
   'banners',
@@ -482,7 +496,7 @@ const VIEW_PERMISSIONS: Partial<Record<View, string>> = {
   passengers: 'passengers.read', bookings: 'bookings.read', passes: 'passes.read',
   coupons: 'coupons.read', payments: 'payments.read', 'cancelled-tickets': 'bookings.read',
   refunds: 'refunds.read', 'failed-refunds': 'refunds.read', 'paid-refunds': 'refunds.read',
-  notifications: 'notifications.read', reports: 'reports.read', 'audit-logs': 'audit_logs.read',
+  notifications: 'notifications.read', reports: 'reports.read', 'owner-weekly-payment-report': 'settlements.read', 'owner-payout-rates': 'settlements.read', 'audit-logs': 'audit_logs.read',
   banners: 'banners.read',
   'payu-webhooks': 'webhooks.read',
   'owner-requests': 'owner_requests.read',
@@ -549,7 +563,7 @@ const AppInner: React.FC = () => {
   // ── Check if View is allowed ───────────────────────────
   const checkViewAllowed = (view: View): boolean => {
     if (view === 'dashboard') return true;
-    if (view === 'owner-requests' || view === 'owner-kyc' || view === 'owner-settlements') {
+    if (view === 'owner-requests' || view === 'owner-kyc' || view === 'owner-settlements' || view === 'owner-weekly-payment-report' || view === 'owner-payout-rates') {
       if (hasRole('admin') || hasRole('owner')) return true;
     }
     const permission = VIEW_PERMISSIONS[view];
@@ -881,6 +895,20 @@ const AppInner: React.FC = () => {
         return (
           <PageWrapper>
             <ReportsPage {...props} />
+          </PageWrapper>
+        );
+
+      case 'owner-weekly-payment-report':
+        return (
+          <PageWrapper>
+            <OwnerWeeklyPaymentReportPage {...props} />
+          </PageWrapper>
+        );
+
+      case 'owner-payout-rates':
+        return (
+          <PageWrapper>
+            <OwnerPayoutRatesPage {...props} />
           </PageWrapper>
         );
 

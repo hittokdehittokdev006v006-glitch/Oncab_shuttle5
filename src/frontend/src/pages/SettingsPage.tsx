@@ -11,6 +11,8 @@ interface SettingsPageProps {
   onNotify: (msg: string, type?: any) => void;
 }
 
+const normalizeRateKey = (value: string) => (value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
 export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
   const [activeTab, setActiveTab] = useState<'general' | 'payment' | 'notifications' | 'booking' | 'settlement' | 'security'>('general');
   const [loading, setLoading] = useState(false);
@@ -182,6 +184,19 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
     }
   };
 
+
+  const dynamicBusTypeRows = busTypes
+    .map((busType: any) => {
+      const name = String(busType?.name || busType?.bus_type || '').trim();
+      if (!name) return null;
+      const key = normalizeRateKey(name);
+      return {
+        key,
+        label: name,
+        value: customRates[key] ?? customRates[name] ?? '',
+      };
+    })
+    .filter((row): row is { key: string; label: string; value: string } => Boolean(row));
 
   const handleChange = (key: string, val: string) => {
     setSettings((prev) => ({ ...prev, [key]: val }));
@@ -499,6 +514,40 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
                       />
                       <p className="text-[11px] text-slate-400">Default rate for Force Traveller & mini-buses per completed trip.</p>
                     </div>
+
+                    {dynamicBusTypeRows.length > 0 && (
+                      <div className="sm:col-span-2 lg:col-span-3 pt-4 border-t border-slate-700/50">
+                        <div className="mb-3">
+                          <h4 className="text-sm font-semibold text-white">Dynamic Bus Types</h4>
+                          <p className="text-[11px] text-slate-400">Add a custom payout rate for each active vehicle category in the system so trip payouts match the exact bus type.</p>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {dynamicBusTypeRows.map((row) => (
+                            <div key={row.key} className="p-4 rounded-xl border border-slate-700/60 bg-slate-800/50 space-y-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <div>
+                                  <span className="font-semibold text-sm text-white block">{row.label}</span>
+                                  <span className="text-[11px] text-slate-400">Custom trip rate</span>
+                                </div>
+                                <span className="text-[10px] px-2 py-0.5 rounded-full border border-slate-600 text-slate-300 bg-slate-900/70">
+                                  {row.label}
+                                </span>
+                              </div>
+                              <Input
+                                label="Trip Rate (₹ / trip)"
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={row.value}
+                                onChange={(val) => setCustomRates((prev) => ({ ...prev, [row.key]: String(val) }))}
+                                placeholder="0"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Dynamic Summary Preview Card */}
                     <div className="p-4 rounded-xl border border-slate-700/60 bg-slate-800/40 flex flex-col justify-between">

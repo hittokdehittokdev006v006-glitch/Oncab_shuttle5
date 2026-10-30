@@ -33,18 +33,31 @@ const getTripRatesByBusType = async () => {
 };
 
 // Helper to resolve trip rate based on bus type name and configured rates
+const normalizeRateKey = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
 const resolveTripRate = (busTypeName, tripRates = {}) => {
   const rates = { bus: 3000, traveller: 1900, ...tripRates };
   if (!busTypeName) return Number(rates.bus) || 3000;
-  const norm = String(busTypeName).toLowerCase().trim();
+
+  const norm = normalizeRateKey(busTypeName);
+  let fallbackRate = Number(rates.bus) || 3000;
+
   for (const [k, rate] of Object.entries(rates)) {
-    const keyLower = String(k).toLowerCase().trim();
+    const keyLower = normalizeRateKey(k);
+    if (!keyLower) continue;
+
+    if (norm === keyLower) {
+      const val = parseFloat(rate);
+      return Number.isFinite(val) ? val : fallbackRate;
+    }
+
     if (norm.includes(keyLower) || keyLower.includes(norm)) {
       const val = parseFloat(rate);
-      return Number.isFinite(val) ? val : 3000;
+      if (Number.isFinite(val)) return val;
     }
   }
-  return Number(rates.bus) || 3000;
+
+  return fallbackRate;
 };
 
 // ── 1. List Settlements ─────────────────────────────────────

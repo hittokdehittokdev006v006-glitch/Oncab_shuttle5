@@ -32,6 +32,27 @@ const getRevenuePeriod = (date, groupBy) => {
   return `${year}-${month}-${day}`;
 };
 
+const getPreviousCalendarWeekRange = (anchorDate = new Date()) => {
+  const anchor = new Date(anchorDate);
+  anchor.setHours(0, 0, 0, 0);
+
+  const currentWeekMonday = new Date(anchor);
+  currentWeekMonday.setDate(anchor.getDate() - ((anchor.getDay() + 6) % 7));
+
+  const lastWeekMonday = new Date(currentWeekMonday);
+  lastWeekMonday.setDate(currentWeekMonday.getDate() - 7);
+
+  const lastWeekSunday = new Date(lastWeekMonday);
+  lastWeekSunday.setDate(lastWeekMonday.getDate() + 6);
+
+  return {
+    start: lastWeekMonday,
+    end: lastWeekSunday,
+    startStr: lastWeekMonday.toISOString().split('T')[0],
+    endStr: lastWeekSunday.toISOString().split('T')[0],
+  };
+};
+
 const addMoney = (current, amount) => Math.round((current + amount + Number.EPSILON) * 100) / 100;
 
 // ── Dashboard Stats ────────────────────────────────────────
@@ -634,12 +655,17 @@ exports.revenueReport = async (req, res, next) => {
     if (from_date) {
       startDate = new Date(`${from_date}T00:00:00`);
     } else {
-      startDate = new Date(endDate);
-      if (period === 'daily') startDate.setDate(startDate.getDate() - 6);
-      else if (period === 'weekly') startDate.setDate(startDate.getDate() - 27);
-      else {
-        startDate.setMonth(startDate.getMonth() - 5);
-        startDate.setDate(1);
+      if (period === 'weekly') {
+        const previousWeek = getPreviousCalendarWeekRange(endDate);
+        startDate = new Date(`${previousWeek.startStr}T00:00:00`);
+        endDate.setTime(new Date(`${previousWeek.endStr}T23:59:59.999`).getTime());
+      } else {
+        startDate = new Date(endDate);
+        if (period === 'daily') startDate.setDate(startDate.getDate() - 6);
+        else {
+          startDate.setMonth(startDate.getMonth() - 5);
+          startDate.setDate(1);
+        }
       }
     }
     if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || startDate > endDate) {
@@ -666,16 +692,35 @@ exports.revenueReport = async (req, res, next) => {
       }
     } catch {}
 
+    const normalizeRateKey = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
     const getRateForBusType = (typeName) => {
       if (!typeName) return Number(tripRates.bus) || 3000;
-      const lower = String(typeName).toLowerCase().trim();
+
+      const lower = String(typeName).trim();
+      const normalizedLower = normalizeRateKey(lower);
+      let bestMatch = null;
+
       for (const [k, rate] of Object.entries(tripRates)) {
-        const keyLower = String(k).toLowerCase().trim();
-        if (lower.includes(keyLower) || keyLower.includes(lower)) {
+        const key = String(k).trim();
+        const normalizedKey = normalizeRateKey(key);
+        if (!normalizedKey) continue;
+
+        if (normalizedLower === normalizedKey) {
           const val = parseFloat(rate);
-          return Number.isFinite(val) ? val : 3000;
+          return Number.isFinite(val) ? val : Number(tripRates.bus) || 3000;
+        }
+
+        if (!bestMatch && (normalizedLower.includes(normalizedKey) || normalizedKey.includes(normalizedLower))) {
+          bestMatch = rate;
         }
       }
+
+      if (bestMatch !== null) {
+        const val = parseFloat(bestMatch);
+        return Number.isFinite(val) ? val : Number(tripRates.bus) || 3000;
+      }
+
       return Number(tripRates.bus) || 3000;
     };
 
@@ -938,6 +983,13 @@ exports.revenueReport = async (req, res, next) => {
       const busTypeId = resolvedBusType?.id || null;
       const busTypeName = resolvedBusType?.name || 'Standard Bus';
 
+      const tripRate = trip.status === 'Completed' ? getRateForBusType(busTypeName) : 0;
+      const tripPayoutGross = trip.status === 'Completed' ? tripRate : tripGrossRevenue;
+      const tripTdsAmount = trip.status === 'Completed' ? Number((tripPayoutGross * (tdsPercentage / 100)).toFixed(2)) : 0;
+      const tripPayoutNet = trip.status === 'Completed'
+        ? Number((tripPayoutGross - tripTdsAmount).toFixed(2))
+        : tripNetRevenue;
+
       const tripEntry = {
         owner_id: tripOwnerId,
         owner_name: ownerNameById.get(tripOwnerId) || (tripOwnerId ? `Owner #${tripOwnerId}` : 'Unassigned'),
@@ -980,11 +1032,13 @@ exports.revenueReport = async (req, res, next) => {
         } : null,
         distinct_seats: distinctSeats,
         booking_count: bookingCount,
-        gross_revenue: tripGrossRevenue,
-        net_revenue: tripNetRevenue,
-        revenue: tripGrossRevenue,
-        trip_rate: getRateForBusType(busTypeName),
-        earned_amount: trip.status === 'Completed' ? getRateForBusType(busTypeName) : 0,
+        gross_revenue: tripPayoutGross,
+        tds_amount: tripTdsAmount,
+        net_revenue: tripPayoutNet,
+        net_payout: tripPayoutNet,
+        revenue: tripPayoutGross,
+        trip_rate: tripRate,
+        earned_amount: tripRate,
       };
 
       tripBreakdown.push(tripEntry);
@@ -1020,8 +1074,8 @@ exports.revenueReport = async (req, res, next) => {
         else if (trip.status === 'Cancelled') dStat.cancelled_trips += 1;
         dStat.distinct_seats += distinctSeats;
         dStat.booking_count += bookingCount;
-        dStat.gross_revenue = addMoney(dStat.gross_revenue, tripGrossRevenue);
-        dStat.net_revenue = addMoney(dStat.net_revenue, tripNetRevenue);
+        dStat.gross_revenue = addMoney(dStat.gross_revenue, tripPayoutGross);
+        dStat.net_revenue = addMoney(dStat.net_revenue, tripPayoutNet);
       }
 
       // Accumulate Bus Type stats
@@ -1055,8 +1109,8 @@ exports.revenueReport = async (req, res, next) => {
       else if (trip.status === 'Cancelled') btStat.cancelled_trips += 1;
       btStat.distinct_seats += distinctSeats;
       btStat.bookings_count += bookingCount;
-      btStat.gross_revenue = addMoney(btStat.gross_revenue, tripGrossRevenue);
-      btStat.net_revenue = addMoney(btStat.net_revenue, tripNetRevenue);
+      btStat.gross_revenue = addMoney(btStat.gross_revenue, tripPayoutGross);
+      btStat.net_revenue = addMoney(btStat.net_revenue, tripPayoutNet);
 
       // Accumulate Route stats
       const routeId = Number(trip.route_id);
@@ -1079,10 +1133,10 @@ exports.revenueReport = async (req, res, next) => {
       }
       routeTotal.trips += 1;
       routeTotal.distinct_seats += distinctSeats;
-      routeTotal.gross_revenue = addMoney(routeTotal.gross_revenue, tripGrossRevenue);
-      routeTotal.net_revenue = addMoney(routeTotal.net_revenue, tripNetRevenue);
+      routeTotal.gross_revenue = addMoney(routeTotal.gross_revenue, tripPayoutGross);
+      routeTotal.net_revenue = addMoney(routeTotal.net_revenue, tripPayoutNet);
       routeTotal.revenue = routeTotal.gross_revenue;
-      routeTotal.fare_total = addMoney(routeTotal.fare_total, tripGrossRevenue);
+      routeTotal.fare_total = addMoney(routeTotal.fare_total, tripPayoutGross);
 
       // Accumulate Owner stats
       let ownerTotal = ownerTotals.get(tripOwnerId);
@@ -1091,7 +1145,9 @@ exports.revenueReport = async (req, res, next) => {
           owner_id: tripOwnerId,
           owner_name: ownerNameById.get(tripOwnerId) || (tripOwnerId ? `Owner #${tripOwnerId}` : 'Unassigned'),
           gross_revenue: 0,
+          tds_amount: 0,
           net_revenue: 0,
+          net_payout: 0,
           revenue: 0,
           distinct_seats: 0,
           trips: 0,
@@ -1108,8 +1164,10 @@ exports.revenueReport = async (req, res, next) => {
       else if (trip.status === 'Active') ownerTotal.active_trips += 1;
       else if (trip.status === 'Cancelled') ownerTotal.cancelled_trips += 1;
       ownerTotal.distinct_seats += distinctSeats;
-      ownerTotal.gross_revenue = addMoney(ownerTotal.gross_revenue, tripGrossRevenue);
-      ownerTotal.net_revenue = addMoney(ownerTotal.net_revenue, tripNetRevenue);
+      ownerTotal.gross_revenue = addMoney(ownerTotal.gross_revenue, tripPayoutGross);
+      ownerTotal.tds_amount = addMoney(ownerTotal.tds_amount, tripTdsAmount);
+      ownerTotal.net_revenue = addMoney(ownerTotal.net_revenue, tripPayoutNet);
+      ownerTotal.net_payout = addMoney(ownerTotal.net_payout, tripPayoutNet);
       ownerTotal.revenue = ownerTotal.gross_revenue;
 
       // Accumulate Period Trend from individual booked seats
@@ -1185,7 +1243,9 @@ exports.revenueReport = async (req, res, next) => {
           owner_id: ownerId,
           owner_name: owner.name,
           gross_revenue: 0,
+          tds_amount: 0,
           net_revenue: 0,
+          net_payout: 0,
           revenue: 0,
           distinct_seats: 0,
           trips: 0,
@@ -1211,8 +1271,39 @@ exports.revenueReport = async (req, res, next) => {
       oTotal.bus_types = ownerBusTypeNames;
     }
 
-    const ownerBreakdown = [...ownerTotals.values()]
-      .map((owner) => ({ ...owner, owner_name: ownerNameById.get(owner.owner_id) || `Owner #${owner.owner_id}` }))
+    const ownerBreakdown = owners
+      .map((owner) => {
+        const ownerId = Number(owner.id);
+        const ownerSummary = ownerTotals.get(ownerId) || {
+          owner_id: ownerId,
+          owner_name: owner.name,
+          gross_revenue: 0,
+          tds_amount: 0,
+          net_revenue: 0,
+          net_payout: 0,
+          revenue: 0,
+          distinct_seats: 0,
+          trips: 0,
+          scheduled_trips: 0,
+          completed_trips: 0,
+          active_trips: 0,
+          cancelled_trips: 0,
+        };
+
+        return {
+          ...ownerSummary,
+          owner_id: ownerId,
+          owner_name: owner.name,
+          gross_revenue: Number(ownerSummary.gross_revenue || 0),
+          tds_amount: Number(ownerSummary.tds_amount || 0),
+          net_revenue: Number(ownerSummary.net_payout ?? ownerSummary.net_revenue ?? 0),
+          net_payout: Number(ownerSummary.net_payout ?? ownerSummary.net_revenue ?? 0),
+          revenue: Number(ownerSummary.revenue || ownerSummary.gross_revenue || 0),
+          trips: Number(ownerSummary.trips || 0),
+          completed_trips: Number(ownerSummary.completed_trips || 0),
+          cancelled_trips: Number(ownerSummary.cancelled_trips || 0),
+        };
+      })
       .sort((a, b) => b.revenue - a.revenue || b.trips - a.trips);
 
     const filteredOwners = selectedOwnerId
@@ -1224,8 +1315,8 @@ exports.revenueReport = async (req, res, next) => {
       .sort((a, b) => b.revenue - a.revenue || b.trips - a.trips);
 
     const report = [...periodTotals.values()].sort((a, b) => a.period.localeCompare(b.period));
-    const grossRevenue = filteredOwners.reduce((sum, owner) => sum + owner.gross_revenue, 0);
-    const netRevenue = filteredOwners.reduce((sum, owner) => sum + owner.net_revenue, 0);
+    const grossRevenue = filteredOwners.reduce((sum, owner) => sum + (Number(owner.gross_revenue) || 0), 0);
+    const netRevenue = filteredOwners.reduce((sum, owner) => sum + (Number(owner.net_payout ?? owner.net_revenue ?? 0) || 0), 0);
     const total = grossRevenue;
     const distinctSeats = filteredOwners.reduce((sum, owner) => sum + owner.distinct_seats, 0);
 
@@ -1327,7 +1418,8 @@ exports.revenueReport = async (req, res, next) => {
           total_distinct_seats: ownerDistinctSeats,
           total_bookings: ownerBookingsCount,
           gross_revenue: ownerTotals.get(targetOwnerId)?.gross_revenue || 0,
-          net_revenue: ownerTotals.get(targetOwnerId)?.net_revenue || 0,
+          tds_amount: ownerTotals.get(targetOwnerId)?.tds_amount || 0,
+          net_revenue: ownerTotals.get(targetOwnerId)?.net_payout ?? (ownerTotals.get(targetOwnerId)?.net_revenue || 0),
         },
         vehicle_summary: {
           total_vehicles: ownerVehs.length,

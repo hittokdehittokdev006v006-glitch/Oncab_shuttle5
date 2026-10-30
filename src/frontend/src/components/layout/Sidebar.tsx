@@ -18,7 +18,7 @@ export type View =
   | 'packages' | 'package-purchases'
   | 'passengers' | 'bookings' | 'passes' | 'cancelled-tickets' | 'refunds'
   | 'failed-refunds' | 'paid-refunds' | 'payments' | 'notifications'
-  | 'coupons' | 'reports' | 'audit-logs' | 'settings' | 'owner-requests' | 'banners'
+  | 'coupons' | 'reports' | 'owner-weekly-payment-report' | 'owner-payout-rates' | 'audit-logs' | 'settings' | 'owner-requests' | 'banners'
   | 'payu-webhooks' | 'owner-kyc' | 'owner-settlements';
 
 interface NavItem {
@@ -105,6 +105,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'reports', label: 'Reports & Analytics', icon: BarChart3, permission: 'reports.read' },
       { id: 'owner-settlements', label: 'Owner Settlements', icon: Banknote, permission: 'settlements.read' },
+      { id: 'owner-weekly-payment-report', label: 'Owner Weekly Payment Report', icon: BarChart3, permission: 'settlements.read' },
+      { id: 'owner-payout-rates', label: 'Owner Payout Rates', icon: Banknote, permission: 'settlements.read' },
       { id: 'audit-logs', label: 'Audit Logs', icon: ClipboardList, permission: 'audit_logs.read' },
     ]
   },
@@ -176,7 +178,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (item.id === 'owner-kyc') {
         return isAdmin || isOwner || (item.permission && hasPermission(item.permission));
       }
-      if (item.id === 'owner-settlements') {
+      if (item.id === 'owner-settlements' || item.id === 'owner-weekly-payment-report' || item.id === 'owner-payout-rates') {
         return isAdmin || isOwner || (item.permission && hasPermission(item.permission));
       }
       if (!item.permission) return true;
