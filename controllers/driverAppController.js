@@ -340,6 +340,8 @@ exports.getTripDetails = async (req, res, next) => {
         {
           model: Booking,
           as: 'bookings',
+          where: { booking_status: 'confirmed' },
+          required: false,
           include: [
             { model: Stop, as: 'origin_stop' },
             { model: Stop, as: 'destination_stop' },
@@ -389,7 +391,7 @@ exports.getPassengerManifest = async (req, res, next) => {
       trip_id: tripId,
       [Op.or]: [
         { booking_status: 'confirmed', payment_status: 'paid' },
-        { booking_status: 'cancelled', payment_status: { [Op.in]: ['paid', 'refunded', 'partial_refund', 'pending'] } },
+        // { booking_status: 'cancelled', payment_status: { [Op.in]: ['paid', 'refunded', 'partial_refund', 'pending'] } },
       ],
     };
     if (boarding_status) {
@@ -601,8 +603,8 @@ exports.completeTrip = async (req, res, next) => {
       if (Number.isFinite(stopLat) && Number.isFinite(stopLng)) {
         const accuracy = req.body?.accuracy != null ? Number(req.body.accuracy) : null;
         const allowedRadius = await getCompletionRadiusMeters();
-        proximityResult = checkProximityToStop(currLat, currLng, stopLat, stopLng, allowedRadius, accuracy);
         distanceMeters = proximityResult.rawDistanceMeters;
+        proximityResult = checkProximityToStop(currLat, currLng, stopLat, stopLng, allowedRadius, accuracy);
 
         if (!proximityResult.isWithin) {
           await transaction.rollback();
