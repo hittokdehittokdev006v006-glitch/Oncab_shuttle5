@@ -962,21 +962,6 @@ export const TripsPage: React.FC<TripsPageProps> = ({ onNotify }) => {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={async () => {
-              try {
-                const resp = await tripsAPI.generateFuture({ days_ahead: 14 });
-                onNotify(resp.data?.message || 'Generated future trip instances');
-                fetchTrips();
-              } catch (err: any) {
-                onNotify(err.response?.data?.message || 'Future trip generation failed', 'error');
-              }
-            }}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold shadow-sm transition-all"
-          >
-            <Zap size={13} className="fill-slate-950" />
-            Auto-Generate Future Trips
-          </button>
-          <button
             onClick={fetchTrips}
             className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-[#0c2e59] hover:bg-[#082040] text-white text-xs font-semibold shadow-sm transition-all"
           >

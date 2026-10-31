@@ -32,6 +32,13 @@ const getRevenuePeriod = (date, groupBy) => {
   return `${year}-${month}-${day}`;
 };
 
+const toDateOnlyString = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 const getPreviousCalendarWeekRange = (anchorDate = new Date()) => {
   const anchor = new Date(anchorDate);
   anchor.setHours(0, 0, 0, 0);
@@ -48,8 +55,8 @@ const getPreviousCalendarWeekRange = (anchorDate = new Date()) => {
   return {
     start: lastWeekMonday,
     end: lastWeekSunday,
-    startStr: lastWeekMonday.toISOString().split('T')[0],
-    endStr: lastWeekSunday.toISOString().split('T')[0],
+    startStr: toDateOnlyString(lastWeekMonday),
+    endStr: toDateOnlyString(lastWeekSunday),
   };
 };
 
@@ -671,8 +678,8 @@ exports.revenueReport = async (req, res, next) => {
     if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || startDate > endDate) {
       return res.status(400).json({ success: false, message: 'A valid date range is required' });
     }
-    const startDateStr = startDate.toISOString().split('T')[0];
-    const endDateStr = endDate.toISOString().split('T')[0];
+    const startDateStr = from_date || toDateOnlyString(startDate);
+    const endDateStr = to_date || toDateOnlyString(endDate);
 
     // 1. Fetch reference options: Owners, Bus Types, Routes, System Settings
     let tripRates = { bus: 3000, traveller: 1900 };
@@ -781,12 +788,9 @@ exports.revenueReport = async (req, res, next) => {
     const targetVehicleIds = targetVehicles.map(v => v.id);
     const targetDriverIds = targetDrivers.map(d => d.id);
 
-    // Trip filtering
+    // Trip filtering strictly by trip_date
     const tripWhere = {
-      [Op.or]: [
-        { trip_date: { [Op.between]: [startDateStr, endDateStr] } },
-        { created_at: { [Op.between]: [startDate, endDate] } },
-      ],
+      trip_date: { [Op.between]: [startDateStr, endDateStr] },
     };
 
     if (targetOwnerId) {
@@ -839,10 +843,10 @@ exports.revenueReport = async (req, res, next) => {
     const tripIds = trips.map(t => Number(t.id));
     const tripById = new Map(trips.map(t => [Number(t.id), t]));
 
-    // 4. Query bookings for these trips
+    // 4. Query bookings for these trips (scoped to these trips and date range)
     const bookingWhere = {
       booking_status: isOwner ? 'confirmed' : { [Op.in]: ['confirmed', 'completed'] },
-      created_at: { [Op.between]: [startDate, endDate] },
+      travel_date: { [Op.between]: [startDateStr, endDateStr] },
     };
     if (isOwner) {
       bookingWhere.payment_status = 'paid';
@@ -983,12 +987,13 @@ exports.revenueReport = async (req, res, next) => {
       const busTypeId = resolvedBusType?.id || null;
       const busTypeName = resolvedBusType?.name || 'Standard Bus';
 
-      const tripRate = trip.status === 'Completed' ? getRateForBusType(busTypeName) : 0;
-      const tripPayoutGross = trip.status === 'Completed' ? tripRate : tripGrossRevenue;
-      const tripTdsAmount = trip.status === 'Completed' ? Number((tripPayoutGross * (tdsPercentage / 100)).toFixed(2)) : 0;
-      const tripPayoutNet = trip.status === 'Completed'
-        ? Number((tripPayoutGross - tripTdsAmount).toFixed(2))
-        : tripNetRevenue;
+      const tripRate = getRateForBusType(busTypeName);
+      const tripPayoutGross = tripRate;
+      const tripTdsAmount = Number((tripPayoutGross * (tdsPercentage / 100)).toFixed(2));
+      const tripPayoutNet = Number((tripPayoutGross - tripTdsAmount).toFixed(2));
+      const completedTripPayoutGross = trip.status === 'Completed' ? tripPayoutGross : 0;
+      const completedTripTdsAmount = trip.status === 'Completed' ? tripTdsAmount : 0;
+      const completedTripPayoutNet = trip.status === 'Completed' ? tripPayoutNet : 0;
 
       const tripEntry = {
         owner_id: tripOwnerId,
@@ -1148,26 +1153,43 @@ exports.revenueReport = async (req, res, next) => {
           tds_amount: 0,
           net_revenue: 0,
           net_payout: 0,
+          total_trip_amount: 0,
+          total_tds_amount: 0,
+          total_net_payout: 0,
+          completed_trip_amount: 0,
+          completed_tds_amount: 0,
+          completed_net_payout: 0,
           revenue: 0,
           distinct_seats: 0,
           trips: 0,
+          total_trips: 0,
           scheduled_trips: 0,
           completed_trips: 0,
+          completed_trip_count: 0,
           active_trips: 0,
           cancelled_trips: 0,
         };
         ownerTotals.set(tripOwnerId, ownerTotal);
       }
       ownerTotal.trips += 1;
-      if (trip.status === 'Completed') ownerTotal.completed_trips += 1;
-      else if (trip.status === 'Scheduled') ownerTotal.scheduled_trips += 1;
+      ownerTotal.total_trips = ownerTotal.trips;
+      if (trip.status === 'Completed') {
+        ownerTotal.completed_trips += 1;
+        ownerTotal.completed_trip_count = ownerTotal.completed_trips;
+        ownerTotal.completed_trip_amount = addMoney(ownerTotal.completed_trip_amount, tripPayoutGross);
+        ownerTotal.completed_tds_amount = addMoney(ownerTotal.completed_tds_amount, tripTdsAmount);
+        ownerTotal.completed_net_payout = addMoney(ownerTotal.completed_net_payout, tripPayoutNet);
+      } else if (trip.status === 'Scheduled') ownerTotal.scheduled_trips += 1;
       else if (trip.status === 'Active') ownerTotal.active_trips += 1;
       else if (trip.status === 'Cancelled') ownerTotal.cancelled_trips += 1;
       ownerTotal.distinct_seats += distinctSeats;
       ownerTotal.gross_revenue = addMoney(ownerTotal.gross_revenue, tripPayoutGross);
+      ownerTotal.total_trip_amount = ownerTotal.gross_revenue;
       ownerTotal.tds_amount = addMoney(ownerTotal.tds_amount, tripTdsAmount);
+      ownerTotal.total_tds_amount = ownerTotal.tds_amount;
       ownerTotal.net_revenue = addMoney(ownerTotal.net_revenue, tripPayoutNet);
       ownerTotal.net_payout = addMoney(ownerTotal.net_payout, tripPayoutNet);
+      ownerTotal.total_net_payout = ownerTotal.net_payout;
       ownerTotal.revenue = ownerTotal.gross_revenue;
 
       // Accumulate Period Trend from individual booked seats
@@ -1246,11 +1268,19 @@ exports.revenueReport = async (req, res, next) => {
           tds_amount: 0,
           net_revenue: 0,
           net_payout: 0,
+          total_trip_amount: 0,
+          total_tds_amount: 0,
+          total_net_payout: 0,
+          completed_trip_amount: 0,
+          completed_tds_amount: 0,
+          completed_net_payout: 0,
           revenue: 0,
           distinct_seats: 0,
           trips: 0,
+          total_trips: 0,
           scheduled_trips: 0,
           completed_trips: 0,
+          completed_trip_count: 0,
           active_trips: 0,
           cancelled_trips: 0,
         });
@@ -1281,11 +1311,19 @@ exports.revenueReport = async (req, res, next) => {
           tds_amount: 0,
           net_revenue: 0,
           net_payout: 0,
+          total_trip_amount: 0,
+          total_tds_amount: 0,
+          total_net_payout: 0,
+          completed_trip_amount: 0,
+          completed_tds_amount: 0,
+          completed_net_payout: 0,
           revenue: 0,
           distinct_seats: 0,
           trips: 0,
+          total_trips: 0,
           scheduled_trips: 0,
           completed_trips: 0,
+          completed_trip_count: 0,
           active_trips: 0,
           cancelled_trips: 0,
         };
@@ -1295,12 +1333,20 @@ exports.revenueReport = async (req, res, next) => {
           owner_id: ownerId,
           owner_name: owner.name,
           gross_revenue: Number(ownerSummary.gross_revenue || 0),
+          total_trip_amount: Number(ownerSummary.total_trip_amount ?? ownerSummary.gross_revenue ?? 0),
           tds_amount: Number(ownerSummary.tds_amount || 0),
+          total_tds_amount: Number(ownerSummary.total_tds_amount ?? ownerSummary.tds_amount ?? 0),
           net_revenue: Number(ownerSummary.net_payout ?? ownerSummary.net_revenue ?? 0),
+          total_net_payout: Number(ownerSummary.total_net_payout ?? ownerSummary.net_payout ?? ownerSummary.net_revenue ?? 0),
           net_payout: Number(ownerSummary.net_payout ?? ownerSummary.net_revenue ?? 0),
+          completed_trip_amount: Number(ownerSummary.completed_trip_amount ?? ownerSummary.completed_gross_revenue ?? 0),
+          completed_tds_amount: Number(ownerSummary.completed_tds_amount ?? ownerSummary.completed_tds ?? 0),
+          completed_net_payout: Number(ownerSummary.completed_net_payout ?? ownerSummary.completed_net_revenue ?? ownerSummary.completed_net_amount ?? 0),
           revenue: Number(ownerSummary.revenue || ownerSummary.gross_revenue || 0),
           trips: Number(ownerSummary.trips || 0),
+          total_trips: Number(ownerSummary.total_trips ?? ownerSummary.trips ?? 0),
           completed_trips: Number(ownerSummary.completed_trips || 0),
+          completed_trip_count: Number(ownerSummary.completed_trip_count ?? ownerSummary.completed_trips ?? 0),
           cancelled_trips: Number(ownerSummary.cancelled_trips || 0),
         };
       })
@@ -1393,6 +1439,7 @@ exports.revenueReport = async (req, res, next) => {
 
       const ownerDistinctSeats = ownerTrips.reduce((sum, t) => sum + (tripSeatGroups.get(`${t.id}:${t.trip_date}`)?.seats?.size || 0), 0);
       const ownerBookingsCount = ownerTrips.reduce((sum, t) => sum + (tripSeatGroups.get(`${t.id}:${t.trip_date}`)?.bookings?.size || 0), 0);
+      const ownerSummaryTotals = ownerTotals.get(targetOwnerId) || {};
 
       selected_owner_analytics = {
         owner_id: targetOwnerId,
@@ -1417,9 +1464,18 @@ exports.revenueReport = async (req, res, next) => {
           delayed_trips: delayedTrips,
           total_distinct_seats: ownerDistinctSeats,
           total_bookings: ownerBookingsCount,
-          gross_revenue: ownerTotals.get(targetOwnerId)?.gross_revenue || 0,
-          tds_amount: ownerTotals.get(targetOwnerId)?.tds_amount || 0,
-          net_revenue: ownerTotals.get(targetOwnerId)?.net_payout ?? (ownerTotals.get(targetOwnerId)?.net_revenue || 0),
+          total_trip_amount: ownerSummaryTotals.total_trip_amount ?? ownerSummaryTotals.gross_revenue ?? 0,
+          total_tds_amount: ownerSummaryTotals.total_tds_amount ?? ownerSummaryTotals.tds_amount ?? 0,
+          total_net_payout: ownerSummaryTotals.total_net_payout ?? ownerSummaryTotals.net_payout ?? ownerSummaryTotals.net_revenue ?? 0,
+          gross_revenue: ownerSummaryTotals.total_trip_amount ?? ownerSummaryTotals.gross_revenue ?? 0,
+          tds_amount: ownerSummaryTotals.total_tds_amount ?? ownerSummaryTotals.tds_amount ?? 0,
+          net_revenue: ownerSummaryTotals.total_net_payout ?? ownerSummaryTotals.net_payout ?? ownerSummaryTotals.net_revenue ?? 0,
+          completed_trip_amount: ownerSummaryTotals.completed_trip_amount ?? 0,
+          completed_tds_amount: ownerSummaryTotals.completed_tds_amount ?? 0,
+          completed_net_payout: ownerSummaryTotals.completed_net_payout ?? 0,
+          completed_gross_revenue: ownerSummaryTotals.completed_trip_amount ?? 0,
+          completed_tds: ownerSummaryTotals.completed_tds_amount ?? 0,
+          completed_net_revenue: ownerSummaryTotals.completed_net_payout ?? 0,
         },
         vehicle_summary: {
           total_vehicles: ownerVehs.length,
@@ -1427,15 +1483,19 @@ exports.revenueReport = async (req, res, next) => {
           under_maintenance: ownerVehs.filter(v => v.status === 'Under Maintenance').length,
           vehicles_with_driver: ownerVehs.filter(v => v.driver_id != null).length,
           vehicles_without_driver: ownerVehs.filter(v => v.driver_id == null).length,
-          vehicles: ownerVehs.map(v => ({
-            id: v.id,
-            registration_number: v.registration_number,
-            company_model: v.company_model,
-            bus_type_name: v.bus_type?.name || 'Standard Bus',
-            total_seats: v.total_seats || v.bus_type?.total_seats || 0,
-            status: v.status,
-            assigned_driver_name: v.driver?.name || null,
-          })),
+          vehicles: ownerVehs.map(v => {
+            const bTypeName = v.bus_type?.name || 'Standard Bus';
+            return {
+              id: v.id,
+              registration_number: v.registration_number,
+              company_model: v.company_model,
+              bus_type_name: bTypeName,
+              total_seats: v.total_seats || v.bus_type?.total_seats || 0,
+              status: v.status,
+              assigned_driver_name: v.driver?.name || null,
+              rate_per_trip: getRateForBusType(bTypeName),
+            };
+          }),
         },
       };
     }

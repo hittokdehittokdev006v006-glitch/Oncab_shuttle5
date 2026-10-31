@@ -137,6 +137,32 @@ const parseLocalDate = (dateStr) => {
   return new Date(norm);
 };
 
+// ── Helper to normalize different operating day input formats ─────────
+const normalizeOperatingDays = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+
+  if (Array.isArray(value)) {
+    const cleaned = value
+      .map((item) => String(item).trim())
+      .filter(Boolean);
+    return cleaned.length > 0 ? [...new Set(cleaned)].join(',') : null;
+  }
+
+  const str = String(value).trim();
+  if (!str) return null;
+  if (str.toLowerCase() === 'daily' || str.toLowerCase() === 'all') return '1,2,3,4,5,6,7';
+
+  const tokens = str
+    .split(/[;,\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => s.toLowerCase());
+
+  if (tokens.length === 0) return null;
+  const deduped = [...new Set(tokens)];
+  return deduped.join(',');
+};
+
 // ── Helper to check if a date matches operating_days ─────────
 const isOperatingDay = (dateObj, operatingDays) => {
   if (!operatingDays) return true;
@@ -728,26 +754,35 @@ const processTripDateRange = async ({
       targetDates.add(dateStr);
 
       if (existingMap.has(dateStr)) {
-        // Update existing trip record for this date (preserves unique ID and booked seats)
         const existingTrip = existingMap.get(dateStr);
-        await existingTrip.update(
-          {
-            route_id: routeId,
-            bus_type_id: busTypeId,
-            driver_id: driverId,
-            vehicle_id: vehicleId,
-            departure_time: departureTime,
-            arrival_time: arrivalTime,
-            operating_days: String(curr.getDay() === 0 ? 7 : curr.getDay()),
-            valid_from: normValidFrom,
-            valid_until: normValidUntil,
-            seat_capacity: seatCapacity,
-            status: status,
-            notes: notes !== undefined ? notes : existingTrip.notes,
-          },
-          { transaction }
-        );
-        resultTrips.push(existingTrip);
+        const bookingCount = await Booking.count({
+          where: { trip_id: existingTrip.id, booking_status: { [Op.ne]: 'cancelled' } },
+          transaction,
+        });
+
+        if (existingTrip.started_at || existingTrip.completed_at || existingTrip.status === 'Completed' || bookingCount > 0) {
+          resultTrips.push(existingTrip);
+        } else {
+          // Update existing trip record for this date (preserves unique ID and booked seats)
+          await existingTrip.update(
+            {
+              route_id: routeId,
+              bus_type_id: busTypeId,
+              driver_id: driverId,
+              vehicle_id: vehicleId,
+              departure_time: departureTime,
+              arrival_time: arrivalTime,
+              operating_days: String(curr.getDay() === 0 ? 7 : curr.getDay()),
+              valid_from: normValidFrom,
+              valid_until: normValidUntil,
+              seat_capacity: seatCapacity,
+              status: status,
+              notes: notes !== undefined ? notes : existingTrip.notes,
+            },
+            { transaction }
+          );
+          resultTrips.push(existingTrip);
+        }
       } else {
         // Check duplicate by schedule_code + trip_date or route_id + departure_time + trip_date
         const duplicateCheck = await Trip.findOne({
@@ -782,22 +817,31 @@ const processTripDateRange = async ({
           );
           resultTrips.push(newTrip);
         } else {
-          // If duplicate exists under route/time, update its details
-          await duplicateCheck.update(
-            {
-              schedule_code: scheduleCode,
-              driver_id: driverId,
-              vehicle_id: vehicleId,
-              bus_type_id: busTypeId,
-              operating_days: String(curr.getDay() === 0 ? 7 : curr.getDay()),
-              valid_from: normValidFrom,
-              valid_until: normValidUntil,
-              seat_capacity: seatCapacity,
-              status: status,
-            },
-            { transaction }
-          );
-          resultTrips.push(duplicateCheck);
+          const duplicateBookingCount = await Booking.count({
+            where: { trip_id: duplicateCheck.id, booking_status: { [Op.ne]: 'cancelled' } },
+            transaction,
+          });
+
+          if (duplicateCheck.started_at || duplicateCheck.completed_at || duplicateCheck.status === 'Completed' || duplicateBookingCount > 0) {
+            resultTrips.push(duplicateCheck);
+          } else {
+            // If duplicate exists under route/time, update its details
+            await duplicateCheck.update(
+              {
+                schedule_code: scheduleCode,
+                driver_id: driverId,
+                vehicle_id: vehicleId,
+                bus_type_id: busTypeId,
+                operating_days: String(curr.getDay() === 0 ? 7 : curr.getDay()),
+                valid_from: normValidFrom,
+                valid_until: normValidUntil,
+                seat_capacity: seatCapacity,
+                status: status,
+              },
+              { transaction }
+            );
+            resultTrips.push(duplicateCheck);
+          }
         }
       }
     }
@@ -812,6 +856,10 @@ const processTripDateRange = async ({
         where: { trip_id: oldTrip.id, booking_status: { [Op.ne]: 'cancelled' } },
         transaction,
       });
+
+      if (oldTrip.started_at || oldTrip.completed_at || oldTrip.status === 'Completed') {
+        continue;
+      }
 
       if (bookingCount === 0) {
         await oldTrip.destroy({ transaction });
@@ -853,6 +901,7 @@ exports.create = async (req, res, next) => {
 
     const targetDate = normalizeDateStr(trip_date || valid_from || new Date().toISOString().split('T')[0]);
     const endDate = valid_until ? normalizeDateStr(valid_until) : targetDate;
+    const normalizedOperatingDays = normalizeOperatingDays(operating_days) || null;
 
     if (!schedule_code) {
       schedule_code = `SCH-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -887,7 +936,7 @@ exports.create = async (req, res, next) => {
           vehicle_id: vehicle_id ? parseInt(vehicle_id) : null,
           departure_time,
           arrival_time: arrival_time || null,
-          operating_days: operating_days ? (Array.isArray(operating_days) ? operating_days.join(',') : String(operating_days)) : String(parseLocalDate(targetDate).getDay() === 0 ? 7 : parseLocalDate(targetDate).getDay()),
+          operating_days: normalizedOperatingDays || String(parseLocalDate(targetDate).getDay() === 0 ? 7 : parseLocalDate(targetDate).getDay()),
           trip_date: targetDate,
           valid_from: targetDate,
           valid_until: targetDate,
@@ -905,7 +954,7 @@ exports.create = async (req, res, next) => {
           vehicle_id: vehicle_id ? parseInt(vehicle_id) : null,
           departure_time,
           arrival_time: arrival_time || null,
-          operating_days: operating_days ? (Array.isArray(operating_days) ? operating_days.join(',') : String(operating_days)) : String(parseLocalDate(targetDate).getDay() === 0 ? 7 : parseLocalDate(targetDate).getDay()),
+          operating_days: normalizedOperatingDays || String(parseLocalDate(targetDate).getDay() === 0 ? 7 : parseLocalDate(targetDate).getDay()),
           trip_date: targetDate,
           valid_from: targetDate,
           valid_until: targetDate,
@@ -950,7 +999,7 @@ exports.create = async (req, res, next) => {
       vehicleId: vehicle_id ? parseInt(vehicle_id) : null,
       departureTime: departure_time,
       arrivalTime: arrival_time || null,
-      operatingDays: '1,2,3,4,5,6,7',
+      operatingDays: normalizedOperatingDays || '1,2,3,4,5,6,7',
       validFrom: targetDate,
       validUntil: endDate,
       singleTripDate: targetDate,
@@ -1026,6 +1075,7 @@ exports.update = async (req, res, next) => {
       }
     }
 
+    const operatingDays = normalizeOperatingDays(payload.operating_days ?? targetTrip.operating_days) || '1,2,3,4,5,6,7';
     const updatedTrips = await processTripDateRange({
       scheduleCode,
       routeId: payload.route_id ? parseInt(payload.route_id) : targetTrip.route_id,
@@ -1034,7 +1084,7 @@ exports.update = async (req, res, next) => {
       vehicleId: payload.vehicle_id !== undefined ? (payload.vehicle_id ? parseInt(payload.vehicle_id) : null) : targetTrip.vehicle_id,
       departureTime: payload.departure_time || targetTrip.departure_time,
       arrivalTime: payload.arrival_time !== undefined ? payload.arrival_time : targetTrip.arrival_time,
-      operatingDays: '1,2,3,4,5,6,7',
+      operatingDays,
       validFrom: targetDate,
       validUntil: endDate,
       singleTripDate: targetDate,
