@@ -617,7 +617,7 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
               Create Master & Recurring Trip Schedule
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Define route timetables, driver/bus assignments, repeat operating days, and validity ranges.
+              Define route timetables, driver/bus assignments, and validity ranges.
             </p>
           </div>
         </div>
@@ -724,60 +724,7 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
             </div>
           </div>
 
-          {/* Row 2: Repeat Operating Days & Presets */}
-          <div className="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <label className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                <RefreshCw size={14} className="text-indigo-600 dark:text-indigo-400" />
-                REPEAT OPERATING DAYS
-              </label>
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => handleApplyDayPreset('weekdays')}
-                  className="px-2.5 py-1 text-[11px] font-bold bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md text-slate-800 dark:text-slate-200 hover:bg-indigo-50 hover:text-indigo-700 dark:hover:bg-slate-700 transition-colors shadow-xs"
-                >
-                  Mon - Fri (Weekdays)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleApplyDayPreset('weekends')}
-                  className="px-2.5 py-1 text-[11px] font-bold bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md text-slate-800 dark:text-slate-200 hover:bg-indigo-50 hover:text-indigo-700 dark:hover:bg-slate-700 transition-colors shadow-xs"
-                >
-                  Sat - Sun (Weekends)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleApplyDayPreset('daily')}
-                  className="px-2.5 py-1 text-[11px] font-bold bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md text-slate-800 dark:text-slate-200 hover:bg-indigo-50 hover:text-indigo-700 dark:hover:bg-slate-700 transition-colors shadow-xs"
-                >
-                  Daily (7 Days)
-                </button>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              {DAYS_OF_WEEK.map((d) => {
-                const active = singleForm.operating_days.includes(d.id);
-                return (
-                  <button
-                    key={d.id}
-                    type="button"
-                    onClick={() => handleToggleDay(d.id)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                      active
-                        ? 'bg-indigo-600 text-white shadow-sm ring-2 ring-indigo-500/30'
-                        : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
-                    }`}
-                  >
-                    {d.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Row 3: Validity Date Range */}
+          {/* Row 2: Validity Date Range */}
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
             <div>
               <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1 tracking-wider uppercase">
