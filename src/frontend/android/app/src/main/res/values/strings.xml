@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">oncab-shuttle</string>
+    <string name="title_activity_main">oncab-shuttle</string>
+    <string name="package_name">com.shuttle.oncab</string>
+    <string name="custom_url_scheme">com.shuttle.oncab</string>
+</resources>

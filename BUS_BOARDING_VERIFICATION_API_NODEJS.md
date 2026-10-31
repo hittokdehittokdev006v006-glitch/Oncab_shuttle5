@@ -2118,7 +2118,7 @@ Authorization: Bearer {driverToken}
 **Request Body:**
 ```json
 {
-    "booking_id": 100,
+    "trip_id": 42,
     "boarding_pin": "4821"
 }
 ```
@@ -2460,7 +2460,7 @@ Driver app shows PIN entry
 ```
 POST /api2/bus-driver/confirm-boarding
 {
-    "booking_id": 100,
+    "trip_id": 42,
     "boarding_pin": "4821"
 }
 ```

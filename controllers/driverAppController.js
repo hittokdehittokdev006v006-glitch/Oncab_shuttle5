@@ -924,19 +924,24 @@ exports.scanBoardingPass = async (req, res, next) => {
  */
 exports.confirmBoarding = async (req, res, next) => {
   try {
-    const { booking_id, trip_id, stop_id, boarding_pin } = req.body || {};
+    const { trip_id, stop_id, boarding_pin } = req.body || {};
 
-    if (!booking_id || !boarding_pin) {
+    if (!trip_id || !boarding_pin) {
       return res.status(400).json({
         status: 400,
         success: false,
-        message: 'booking_id and boarding_pin are required',
+        message: 'trip_id and boarding_pin are required',
       });
     }
 
-    const booking = await Booking.findByPk(booking_id);
+    const booking = await Booking.findOne({
+      where: {
+        trip_id,
+        boarding_pin: String(boarding_pin).trim(),
+      },
+    });
     if (!booking) {
-      return res.status(404).json({ status: 404, success: false, message: 'Booking not found' });
+      return res.status(404).json({ status: 404, success: false, message: 'Passenger booking not found for this trip and PIN' });
     }
 
     if (booking.booking_status === 'cancelled') {
@@ -955,10 +960,6 @@ exports.confirmBoarding = async (req, res, next) => {
       });
     }
 
-    if (trip_id && parseInt(booking.trip_id) !== parseInt(trip_id)) {
-      return res.status(400).json({ status: 400, success: false, message: 'Booking does not match specified trip' });
-    }
-
     if (stop_id && booking.origin_stop_id && parseInt(booking.origin_stop_id) !== parseInt(stop_id)) {
       return res.status(400).json({ status: 400, success: false, message: 'Booking pickup stop does not match specified stop' });
     }
@@ -972,15 +973,6 @@ exports.confirmBoarding = async (req, res, next) => {
           booking_id: booking.id,
           boarded_at: booking.boarded_at,
         },
-      });
-    }
-
-    // Strict PIN verification (universal 9999 override removed for security)
-    if (booking.boarding_pin && booking.boarding_pin !== String(boarding_pin).trim()) {
-      return res.status(400).json({
-        status: 400,
-        success: false,
-        message: 'Invalid boarding PIN code entered',
       });
     }
 
