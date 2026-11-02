@@ -137,6 +137,46 @@ const parseLocalDate = (dateStr) => {
   return new Date(norm);
 };
 
+const getServerDateInAsiaKolkata = () => {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+
+  const parts = formatter.formatToParts(new Date());
+  const values = {};
+  parts.forEach((part) => {
+    if (part.type !== 'literal') values[part.type] = part.value;
+  });
+
+  return `${values.year}-${values.month}-${values.day}`;
+};
+
+const validateTripDateNotInPast = (dateValue, fieldName = 'trip_date') => {
+  if (dateValue === undefined || dateValue === null || dateValue === '') {
+    return null;
+  }
+
+  const normalized = normalizeDateStr(dateValue);
+  if (!normalized || !/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    throw new Error(`Invalid ${fieldName} format`);
+  }
+
+  const parsed = parseLocalDate(normalized);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Invalid ${fieldName} format`);
+  }
+
+  const todayStr = getServerDateInAsiaKolkata();
+  if (normalized < todayStr) {
+    throw new Error('You cannot create a trip for a previous date. Please select today or a future date.');
+  }
+
+  return normalized;
+};
+
 // ── Helper to normalize different operating day input formats ─────────
 const normalizeOperatingDays = (value) => {
   if (value === null || value === undefined || value === '') return null;
@@ -899,8 +939,8 @@ exports.create = async (req, res, next) => {
       status = 'Scheduled',
     } = req.body;
 
-    const targetDate = normalizeDateStr(trip_date || valid_from || new Date().toISOString().split('T')[0]);
-    const endDate = valid_until ? normalizeDateStr(valid_until) : targetDate;
+    const targetDate = validateTripDateNotInPast(trip_date || valid_from || new Date().toISOString().split('T')[0]);
+    const endDate = valid_until ? validateTripDateNotInPast(valid_until, 'valid_until') : targetDate;
     const normalizedOperatingDays = normalizeOperatingDays(operating_days) || null;
 
     if (!schedule_code) {
@@ -1039,6 +1079,9 @@ exports.create = async (req, res, next) => {
     });
   } catch (err) {
     await t.rollback();
+    if (err.message && (err.message.includes('previous date') || err.message.includes('Invalid'))) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
     next(err);
   }
 };
@@ -1065,7 +1108,11 @@ exports.update = async (req, res, next) => {
 
     const payload = { ...req.body };
     const scheduleCode = payload.schedule_code || targetTrip.schedule_code;
-    const targetDate = normalizeDateStr(payload.trip_date || payload.valid_from || targetTrip.trip_date || targetTrip.valid_from || new Date().toISOString().split('T')[0]);
+    const hasDateChange = Object.prototype.hasOwnProperty.call(payload, 'trip_date') || Object.prototype.hasOwnProperty.call(payload, 'valid_from');
+    const requestedDate = payload.trip_date || payload.valid_from || null;
+    const targetDate = hasDateChange
+      ? validateTripDateNotInPast(requestedDate, 'trip_date')
+      : normalizeDateStr(targetTrip.trip_date || targetTrip.valid_from || new Date().toISOString().split('T')[0]);
     const endDate = payload.valid_until ? normalizeDateStr(payload.valid_until) : targetDate;
 
     if (!payload.bus_type_id && payload.vehicle_id) {
@@ -1123,6 +1170,9 @@ exports.update = async (req, res, next) => {
     });
   } catch (err) {
     await t.rollback();
+    if (err.message && (err.message.includes('previous date') || err.message.includes('Invalid'))) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
     next(err);
   }
 };
@@ -1345,6 +1395,13 @@ exports.generateFutureTrips = async (req, res, next) => {
     if (isOwnerRole(req)) return res.status(403).json({ success: false, message: 'Owners cannot generate trips' });
     const { start_date, end_date, days_ahead = 14, schedule_ids } = req.body || {};
 
+    if (start_date) {
+      validateTripDateNotInPast(start_date, 'start_date');
+    }
+    if (end_date) {
+      validateTripDateNotInPast(end_date, 'end_date');
+    }
+
     const today = new Date();
     const startDateObj = start_date ? parseLocalDate(start_date) : today;
     let endDateObj = end_date ? parseLocalDate(end_date) : new Date(startDateObj.getTime() + (parseInt(days_ahead) || 14) * 24 * 60 * 60 * 1000);
@@ -1455,6 +1512,9 @@ exports.generateFutureTrips = async (req, res, next) => {
       },
     });
   } catch (err) {
+    if (err.message && (err.message.includes('previous date') || err.message.includes('Invalid'))) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
     next(err);
   }
 };
@@ -1480,8 +1540,8 @@ exports.copyTrips = async (req, res, next) => {
     }
 
     source_date = normalizeDateStr(source_date);
-    target_date = normalizeDateStr(target_date);
-    const targetEnd = target_end_date ? normalizeDateStr(target_end_date) : target_date;
+    target_date = validateTripDateNotInPast(target_date, 'target_date');
+    const targetEnd = target_end_date ? validateTripDateNotInPast(target_end_date, 'target_end_date') : target_date;
 
     const sourceWhere = {
       trip_date: source_date,
@@ -1603,6 +1663,9 @@ exports.copyTrips = async (req, res, next) => {
       },
     });
   } catch (err) {
+    if (err.message && (err.message.includes('previous date') || err.message.includes('Invalid'))) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
     next(err);
   }
 };

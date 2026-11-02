@@ -32,6 +32,34 @@ const maskMobile = (mobile) => {
   return mobile.substring(0, 2) + 'XXXXXX' + mobile.substring(mobile.length - 2);
 };
 
+const getTripDepartureTimestamp = (trip) => {
+  if (!trip) return null;
+  const tripDate = trip.trip_date || trip.assignment_date;
+  const departureTime = trip.departure_time || trip.reporting_time;
+  if (!tripDate || !departureTime) return null;
+
+  const dateText = String(tripDate).slice(0, 10);
+  const timeText = String(departureTime).slice(0, 8);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText) || !/^\d{2}:\d{2}(:\d{2})?$/.test(timeText)) {
+    return null;
+  }
+
+  const scheduledAt = new Date(`${dateText}T${timeText}`);
+  return Number.isNaN(scheduledAt.getTime()) ? null : scheduledAt;
+};
+
+const getTripStartEligibility = (trip) => {
+  const scheduledAt = getTripDepartureTimestamp(trip);
+  const now = new Date();
+  const canStart = Boolean(scheduledAt) && now >= scheduledAt;
+
+  return {
+    scheduled_at: scheduledAt,
+    can_start: canStart,
+    message: canStart ? null : 'Trip can only be started at the scheduled departure time.',
+  };
+};
+
 // ── 1. AUTHENTICATION & PROFILE ────────────────────────────
 
 /**
@@ -286,6 +314,8 @@ exports.getAssignedTrips = async (req, res, next) => {
         ? await getOrderedStopsForRoute(t.route_id, t.departure_time)
         : [];
 
+      const departureState = getTripStartEligibility(t);
+
       return {
         trip_id: t.id,
         schedule_code: t.schedule_code,
@@ -298,6 +328,9 @@ exports.getAssignedTrips = async (req, res, next) => {
         arrival_time: t.arrival_time,
         stop_schedule: stopSchedule,
         status: t.status,
+        can_start_trip: departureState.can_start,
+        start_trip_message: departureState.message,
+        scheduled_departure_at: departureState.scheduled_at ? departureState.scheduled_at.toISOString() : null,
         vehicle: t.vehicle ? {
           id: t.vehicle.id,
           vehicle_number: t.vehicle.registration_number || t.vehicle.vehicle_number,
@@ -358,6 +391,11 @@ exports.getTripDetails = async (req, res, next) => {
     if (tripData.route) {
       tripData.route.stops = await getOrderedStopsForRoute(tripData.route.id, tripData.departure_time);
     }
+
+    const departureState = getTripStartEligibility(tripData);
+    tripData.can_start_trip = departureState.can_start;
+    tripData.start_trip_message = departureState.message;
+    tripData.scheduled_departure_at = departureState.scheduled_at ? departureState.scheduled_at.toISOString() : null;
 
     res.json({
       status: 200,
@@ -481,9 +519,24 @@ exports.startTrip = async (req, res, next) => {
       return res.status(400).json({ status: 400, success: false, message: 'Trip is already completed' });
     }
 
+    const departureState = getTripStartEligibility(trip);
+    if (!departureState.can_start) {
+      return res.status(400).json({
+        status: 400,
+        success: false,
+        message: departureState.message,
+        data: {
+          scheduled_departure_at: departureState.scheduled_at ? departureState.scheduled_at.toISOString() : null,
+          trip_date: trip.trip_date,
+          departure_time: trip.departure_time,
+        },
+      });
+    }
+
+    const startedAt = new Date();
     await trip.update({
       status: 'Active',
-      started_at: new Date(),
+      started_at: startedAt,
     });
 
     // Check if starting GPS coordinates were provided or exist in DriverDetail
@@ -1373,6 +1426,9 @@ exports.getDriverHome = async (req, res, next) => {
           route_name: activeTrip.route?.route_name,
           departure_time: activeTrip.departure_time,
           trip_date: activeTrip.trip_date,
+          can_start_trip: getTripStartEligibility(activeTrip).can_start,
+          start_trip_message: getTripStartEligibility(activeTrip).message,
+          scheduled_departure_at: getTripStartEligibility(activeTrip).scheduled_at ? getTripStartEligibility(activeTrip).scheduled_at.toISOString() : null,
         },
         current_stop: currentStop ? {
           stop_id: currentStop.id,
