@@ -22,7 +22,6 @@ const includesSegmentDurations = (stops) => Array.isArray(stops)
  * Helper to fetch ordered stops for a route using route_stops mapping with fallback to legacy stops
  */
 async function fetchOrderedStopsForRoute(routeId, transaction = null) {
-  await syncRouteStopsTable();
   const routeStops = await RouteStop.findAll({
     where: { route_id: routeId },
     include: [{ model: Stop, as: 'stop' }],
