@@ -29,7 +29,7 @@ export const CancelledTicketsRefundPage: React.FC<CancelledTicketsRefundPageProp
     if (!refundModal) return;
     setProcessing(true);
     try {
-      const response = await refundsAPI.process(refundModal.refundId, { notes: refundNote });
+      const response = await refundsAPI.process(refundModal.refund.id, { notes: refundNote });
       onNotify(response.data.message || 'Refund submitted');
       setRefundModal(null);
       setRefundNote('');
@@ -68,7 +68,7 @@ export const CancelledTicketsRefundPage: React.FC<CancelledTicketsRefundPageProp
                         const refund = b.refunds.find((item: any) => ['pending', 'failed'].includes(item.status));
                         if (refund) setRefundModal({ booking: b, refund });
                       }}>
-                        <RefreshCw size={12} /> Refund
+                        <RefreshCw size={12} /> {b.refunds.find((item: any) => ['pending', 'failed'].includes(item.status))?.refund_method === 'wallet' ? 'Approve Wallet Refund' : 'Approve Refund'}
                       </Button>
                     )}
                   </Td>
@@ -80,7 +80,7 @@ export const CancelledTicketsRefundPage: React.FC<CancelledTicketsRefundPageProp
         )}
       </Card>
       <Modal open={!!refundModal} onClose={() => setRefundModal(null)} title="Process Refund" size="sm"
-        footer={<><Button variant="ghost" onClick={() => setRefundModal(null)}>Cancel</Button><Button onClick={handleProcessRefund} loading={processing}>Process Refund</Button></>}>
+        footer={<><Button variant="ghost" onClick={() => setRefundModal(null)}>Cancel</Button><Button onClick={handleProcessRefund} loading={processing}>{refundModal?.refund?.refund_method === 'wallet' ? 'Approve & Credit Wallet' : 'Approve & Process Refund'}</Button></>}>
         <div className="space-y-3">
           <div className="p-3 rounded-lg" style={{ background: 'rgba(99, 102, 241, 0.08)' }}>
             <p className="text-white text-sm font-medium">{refundModal?.booking?.booking_reference}</p>

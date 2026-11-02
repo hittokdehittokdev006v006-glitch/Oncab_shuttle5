@@ -62,14 +62,14 @@ export const RefundsPage: React.FC<RefundsPageProps> = ({ onNotify }) => {
     }
   };
 
-  const handleProcessPayURefund = async (refund: any) => {
+  const handleProcessRefund = async (refund: any) => {
     setProcessingId(refund.id);
     try {
       const response = await refundsAPI.process(refund.id, {});
-      onNotify(response.data.message || 'Refund submitted to PayU');
+      onNotify(response.data.message || 'Refund approved and processed');
       await fetchRefunds();
     } catch (err: any) {
-      onNotify(err.response?.data?.message || 'Unable to submit PayU refund', 'error');
+      onNotify(err.response?.data?.message || 'Unable to process refund', 'error');
     } finally {
       setProcessingId(null);
     }
@@ -177,8 +177,8 @@ export const RefundsPage: React.FC<RefundsPageProps> = ({ onNotify }) => {
                       </Button>
                     )}
                     {r.status === 'pending' && (
-                      <Button size="sm" variant="secondary" loading={processingId === r.id} onClick={() => handleProcessPayURefund(r)}>
-                        Process PayU Refund
+                      <Button size="sm" variant="secondary" loading={processingId === r.id} onClick={() => handleProcessRefund(r)}>
+                        {r.refund_method === 'wallet' ? 'Approve & Credit Wallet' : 'Approve & Process PayU'}
                       </Button>
                     )}
                     {r.status === 'processing' && r.refund_method === 'payu' && (

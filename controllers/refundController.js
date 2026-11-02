@@ -1,7 +1,7 @@
 'use strict';
 
 const { Op } = require('sequelize');
-const { Refund, Booking, Payment, CustomerUser, SystemSetting, sequelize } = require('../models');
+const { Refund, Booking, Payment, CustomerUser, WalletTransaction, SystemSetting, sequelize } = require('../models');
 const { checkRefundStatus, initiateRefund } = require('../utils/payu');
 
 const buildPagination = (page, limit) => {
@@ -31,7 +31,7 @@ const getPayURefundMode = async () => {
 const isRefundAdminApprovalRequired = async () => {
   const setting = await SystemSetting.findOne({ where: { key: 'refund_admin_approval_required' } });
   if (!setting) return true;
-  return String(setting.value).trim().toLowerCase() === 'true';
+  return !['false', '0', 'no', 'off'].includes(String(setting.value ?? '').trim().toLowerCase());
 };
 
 // Shared helper: call PayU and record the result on the refund.
@@ -183,6 +183,32 @@ exports.process = async (req, res, next) => {
     if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
       await transaction.rollback();
       return res.status(400).json({ success: false, message: 'Refund amount must be greater than zero' });
+    }
+    if (refund.refund_method === 'wallet') {
+      const passenger = refund.passenger_id
+        ? await CustomerUser.findByPk(refund.passenger_id, { transaction, lock: transaction.LOCK.UPDATE })
+        : null;
+      if (!passenger) {
+        await transaction.rollback();
+        return res.status(409).json({ success: false, message: 'Passenger wallet is unavailable for this refund.' });
+      }
+      const balanceAfter = Math.round((Number(passenger.wallet_balance || 0) + refundAmount) * 100) / 100;
+      await passenger.update({ wallet_balance: balanceAfter }, { transaction });
+      await WalletTransaction.create({
+        passenger_id: passenger.id,
+        type: 'credit',
+        amount: refundAmount,
+        balance_after: balanceAfter,
+        source: 'refund',
+        reference_type: 'cancellation_refund',
+        reference_id: refund.refund_reference,
+        description: `Refund for cancelled booking ${booking?.booking_reference || refund.booking_id}`,
+      }, { transaction });
+      await refund.update({ status: 'completed', processed_at: new Date(), notes: req.body?.notes || 'Approved and credited to passenger wallet.' }, { transaction });
+      if (payment) await payment.update({ status: 'refunded' }, { transaction });
+      if (booking) await booking.update({ payment_status: 'refunded' }, { transaction });
+      await transaction.commit();
+      return res.json({ success: true, message: `Wallet refund of ₹${refundAmount} approved and credited.`, data: await Refund.findByPk(refund.id, { include: REFUND_INCLUDE }) });
     }
     if (!payment || !payment.payu_mihpayid || payment.amount == null || Number(payment.amount) <= 0) {
       await transaction.rollback();

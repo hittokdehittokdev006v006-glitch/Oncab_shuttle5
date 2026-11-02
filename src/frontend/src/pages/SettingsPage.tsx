@@ -49,6 +49,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
     bus_stop_search_radius_km: '1',
     trip_completion_radius_meters: '150',
     cancellation_fee_percentage: '10',
+    cancellation_cutoff_minutes: '30',
     allow_cancellation_hours: '2',
     sms_gateway_enabled: 'true',
     email_alerts_enabled: 'true',
@@ -233,6 +234,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
       return;
     }
 
+    const cancellationCutoffMinutes = Number(settings.cancellation_cutoff_minutes);
+    if (!Number.isInteger(cancellationCutoffMinutes) || cancellationCutoffMinutes < 0 || cancellationCutoffMinutes > 1440) {
+      onNotify('Pickup stop cancellation cutoff must be a whole number from 0 to 1440 minutes', 'error');
+      return;
+    }
+
     const completionRadiusMeters = Number(settings.trip_completion_radius_meters);
     if (!Number.isFinite(completionRadiusMeters) || completionRadiusMeters <= 0) {
       onNotify('Trip completion radius must be a number greater than 0 meters', 'error');
@@ -273,7 +280,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
         .filter(([key]) => !['razorpay_key_id', 'razorpay_secret'].includes(key))
         .map(([key, value]) => {
           if (key === 'refund_admin_approval_required') {
-            return { key, value, type: 'boolean', group: 'refund', label: 'Require Admin Approval for Refunds', description: 'When enabled, PayU (bank) refunds wait for admin approval. When disabled, the refund is initiated with PayU automatically as soon as the user cancels.' };
+            return { key, value, type: 'boolean', group: 'refund', label: 'Require Admin Approval for Refunds', description: 'When enabled, refunds wait for admin approval before money is credited or sent to PayU.' };
+          }
+          if (key === 'cancellation_cutoff_minutes') {
+            return { key, value, type: 'number', group: 'booking', label: 'Stop Arrival Cancellation Cutoff (Minutes)', description: 'Passengers cannot cancel within this many minutes before their selected pickup stop arrival.' };
           }
           if (key === 'payu_refund_mode') {
             return { key, value, type: 'string', group: 'payment', label: 'PayU Refund Mode', description: 'Select whether PayU refunds are submitted immediately or handled through the standard refund flow.' };
@@ -599,6 +609,15 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
                     onChange={(val) => handleChange('allow_cancellation_hours', val)}
                   />
                   <Input
+                    label="Pickup Stop Cancellation Cutoff (Minutes)"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={settings.cancellation_cutoff_minutes}
+                    onChange={(val) => handleChange('cancellation_cutoff_minutes', val)}
+                    helperText="Blocks cancellation this many minutes before the selected pickup stop's scheduled or recorded arrival."
+                  />
+                  <Input
                     label="Cancellation Deduction Fee (%)"
                     type="number"
                     value={settings.cancellation_fee_percentage}
@@ -649,14 +668,14 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onNotify }) => {
                   <label className="flex items-start gap-3 text-slate-300 text-sm cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={settings.refund_admin_approval_required !== 'false'}
+                      checked={!['false', '0', 'no', 'off'].includes(String(settings.refund_admin_approval_required ?? 'true').trim().toLowerCase())}
                       onChange={(e) => handleChange('refund_admin_approval_required', e.target.checked ? 'true' : 'false')}
                       className="mt-0.5 w-4 h-4 rounded bg-slate-800 border-slate-700 text-indigo-500 focus:ring-0"
                     />
                     <span>
-                      <span className="font-medium text-white">Require admin approval for PayU (bank) refunds</span>
+                      <span className="font-medium text-white">Require admin approval for refunds</span>
                       <span className="block text-xs text-slate-400 mt-0.5">
-                        Enabled: refunds wait for an admin to approve them in the refunds panel. Disabled: the refund is sent to PayU automatically the moment the user cancels — no approval needed.
+                        Enabled: refunds stay pending until an admin approves them in the refunds panel. Disabled: eligible refunds are processed automatically when the passenger cancels.
                       </span>
                     </span>
                   </label>
