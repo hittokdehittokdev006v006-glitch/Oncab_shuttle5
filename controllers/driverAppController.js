@@ -1,14 +1,40 @@
-'use strict';
+"use strict";
 
-const jwt = require('jsonwebtoken');
-const { Op } = require('sequelize');
-const { Driver, DriverDetail, Trip, Route, Stop, RouteStop, Vehicle, Booking, Passenger, BusType, TripLocation, TripStopArrival } = require('../models');
-const { saveOtp, verifyOtp: verifySmsOtp, sendFast2SMSOtp } = require('../services/smsService');
-const { releaseUnusedCouponOnTripCompletion } = require('../services/couponReleaseService');
-const { getOrderedStopsForRoute } = require('../utils/routeStops');
-const { COMPLETION_RADIUS_METERS, checkProximityToStop, calcHaversineDistanceMeters, getCompletionRadiusMeters } = require('../utils/geoUtils');
-const sequelize = require('../config/database');
-const { settleTripPackageRides } = require('../services/packagePurchaseService');
+const jwt = require("jsonwebtoken");
+const { Op } = require("sequelize");
+const {
+  Driver,
+  DriverDetail,
+  Trip,
+  Route,
+  Stop,
+  RouteStop,
+  Vehicle,
+  Booking,
+  Passenger,
+  BusType,
+  TripLocation,
+  TripStopArrival,
+} = require("../models");
+const {
+  saveOtp,
+  verifyOtp: verifySmsOtp,
+  sendFast2SMSOtp,
+} = require("../services/smsService");
+const {
+  releaseUnusedCouponOnTripCompletion,
+} = require("../services/couponReleaseService");
+const { getOrderedStopsForRoute } = require("../utils/routeStops");
+const {
+  COMPLETION_RADIUS_METERS,
+  checkProximityToStop,
+  calcHaversineDistanceMeters,
+  getCompletionRadiusMeters,
+} = require("../utils/geoUtils");
+const sequelize = require("../config/database");
+const {
+  settleTripPackageRides,
+} = require("../services/packagePurchaseService");
 
 // Helper to generate JWT Token for Driver
 const generateDriverToken = (driver) => {
@@ -19,17 +45,19 @@ const generateDriverToken = (driver) => {
       driver_user_id: driver.driver_user_id,
       name: driver.name,
       mobile: driver.mobile,
-      role: 'driver',
+      role: "driver",
     },
-    process.env.JWT_SECRET || 'secret',
-    { expiresIn: process.env.JWT_EXPIRES_IN || '30d' }
+    process.env.JWT_SECRET || "secret",
+    { expiresIn: process.env.JWT_EXPIRES_IN || "30d" },
   );
 };
 
 // Mask mobile number for privacy (e.g., 98XXXXXX10)
 const maskMobile = (mobile) => {
   if (!mobile || mobile.length < 10) return mobile;
-  return mobile.substring(0, 2) + 'XXXXXX' + mobile.substring(mobile.length - 2);
+  return (
+    mobile.substring(0, 2) + "XXXXXX" + mobile.substring(mobile.length - 2)
+  );
 };
 
 const getTripDepartureTimestamp = (trip) => {
@@ -40,7 +68,10 @@ const getTripDepartureTimestamp = (trip) => {
 
   const dateText = String(tripDate).slice(0, 10);
   const timeText = String(departureTime).slice(0, 8);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText) || !/^\d{2}:\d{2}(:\d{2})?$/.test(timeText)) {
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(dateText) ||
+    !/^\d{2}:\d{2}(:\d{2})?$/.test(timeText)
+  ) {
     return null;
   }
 
@@ -56,7 +87,9 @@ const getTripStartEligibility = (trip) => {
   return {
     scheduled_at: scheduledAt,
     can_start: canStart,
-    message: canStart ? null : 'Trip can only be started at the scheduled departure time.',
+    message: canStart
+      ? null
+      : "Trip can only be started at the scheduled departure time.",
   };
 };
 
@@ -70,7 +103,13 @@ exports.sendOtp = async (req, res, next) => {
   try {
     const { mobile } = req.body || {};
     if (!mobile) {
-      return res.status(400).json({ status: 400, success: false, message: 'Mobile number is required' });
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "Mobile number is required",
+        });
     }
 
     const driver = await Driver.findOne({ where: { mobile } });
@@ -78,12 +117,19 @@ exports.sendOtp = async (req, res, next) => {
       return res.status(404).json({
         status: 404,
         success: false,
-        message: 'Driver mobile number not registered. Please contact operator admin.',
+        message:
+          "Driver mobile number not registered. Please contact operator admin.",
       });
     }
 
-    if (driver.block_status === 'Block') {
-      return res.status(403).json({ status: 403, success: false, message: 'Your driver account has been blocked' });
+    if (driver.block_status === "Block") {
+      return res
+        .status(403)
+        .json({
+          status: 403,
+          success: false,
+          message: "Your driver account has been blocked",
+        });
     }
 
     // Generate real 4-digit numeric OTP
@@ -94,17 +140,19 @@ exports.sendOtp = async (req, res, next) => {
 
     // Send real OTP via Fast2SMS SMS gateway
     const smsResult = await sendFast2SMSOtp(mobile, otp);
-    const smsSent = Boolean(smsResult && (smsResult.return === true || smsResult.status_code === 200));
+    const smsSent = Boolean(
+      smsResult && (smsResult.return === true || smsResult.status_code === 200),
+    );
 
     res.json({
       status: 200,
       success: true,
       message: smsSent
-        ? 'OTP sent successfully to registered mobile number'
-        : 'OTP generated and sent to registered mobile number',
+        ? "OTP sent successfully to registered mobile number"
+        : "OTP generated and sent to registered mobile number",
       data: {
         mobile,
-        otp_demo: process.env.NODE_ENV !== 'production' ? otp : undefined,
+        otp_demo: process.env.NODE_ENV !== "production" ? otp : undefined,
         sms_sent: smsSent,
       },
     });
@@ -121,27 +169,48 @@ exports.verifyOtp = async (req, res, next) => {
   try {
     const { mobile, otp, device_id } = req.body || {};
     if (!mobile || !otp) {
-      return res.status(400).json({ status: 400, success: false, message: 'Mobile number and OTP are required' });
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "Mobile number and OTP are required",
+        });
     }
 
     // Verify OTP code against cached OTP or fallback master test OTPs ('1234', '0000')
-    const isValidOtp = verifySmsOtp(mobile, otp) || otp === '1234' || otp === '0000';
+    const isValidOtp =
+      verifySmsOtp(mobile, otp) || otp === "1234" || otp === "0000";
 
     if (!isValidOtp) {
-      return res.status(400).json({ status: 400, success: false, message: 'Invalid or expired OTP code' });
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "Invalid or expired OTP code",
+        });
     }
 
     const driver = await Driver.findOne({
       where: { mobile },
-      include: [{ model: DriverDetail, as: 'details' }],
+      include: [{ model: DriverDetail, as: "details" }],
     });
 
     if (!driver) {
-      return res.status(404).json({ status: 404, success: false, message: 'Driver not found' });
+      return res
+        .status(404)
+        .json({ status: 404, success: false, message: "Driver not found" });
     }
 
-    if (driver.block_status === 'Block') {
-      return res.status(403).json({ status: 403, success: false, message: 'Your driver account is blocked' });
+    if (driver.block_status === "Block") {
+      return res
+        .status(403)
+        .json({
+          status: 403,
+          success: false,
+          message: "Your driver account is blocked",
+        });
     }
 
     // Update device ID if provided
@@ -154,7 +223,7 @@ exports.verifyOtp = async (req, res, next) => {
     res.json({
       status: 200,
       success: true,
-      message: 'Login successful',
+      message: "Login successful",
       data: {
         token,
         driver: {
@@ -183,8 +252,12 @@ exports.getProfile = async (req, res, next) => {
   try {
     const driver = await Driver.findByPk(req.driver.id, {
       include: [
-        { model: DriverDetail, as: 'details' },
-        { model: Vehicle, as: 'vehicles', include: [{ model: BusType, as: 'bus_type' }] },
+        { model: DriverDetail, as: "details" },
+        {
+          model: Vehicle,
+          as: "vehicles",
+          include: [{ model: BusType, as: "bus_type" }],
+        },
       ],
     });
 
@@ -217,7 +290,7 @@ exports.updateProfile = async (req, res, next) => {
     res.json({
       status: 200,
       success: true,
-      message: 'Profile updated successfully',
+      message: "Profile updated successfully",
       data: driver,
     });
   } catch (err) {
@@ -232,8 +305,14 @@ exports.updateProfile = async (req, res, next) => {
 exports.toggleDutyStatus = async (req, res, next) => {
   try {
     const { online_status } = req.body || {};
-    if (!['Online', 'Offline'].includes(online_status)) {
-      return res.status(400).json({ status: 400, success: false, message: 'Invalid online_status. Must be Online or Offline' });
+    if (!["Online", "Offline"].includes(online_status)) {
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "Invalid online_status. Must be Online or Offline",
+        });
     }
 
     const driver = req.driver;
@@ -268,7 +347,7 @@ exports.getAssignedTrips = async (req, res, next) => {
     const where = { driver_id: driverId };
     if (status) {
       where.status = status;
-      if (String(status).toLowerCase() === 'scheduled') {
+      if (String(status).toLowerCase() === "scheduled") {
         where.trip_date = { [Op.gt]: new Date().toISOString().slice(0, 10) };
       }
     }
@@ -281,73 +360,90 @@ exports.getAssignedTrips = async (req, res, next) => {
       include: [
         {
           model: Route,
-          as: 'route',
-          include: [{ model: Stop, as: 'stops' }],
+          as: "route",
+          include: [{ model: Stop, as: "stops" }],
         },
-        { model: Vehicle, as: 'vehicle', include: [{ model: BusType, as: 'bus_type' }] },
+        {
+          model: Vehicle,
+          as: "vehicle",
+          include: [{ model: BusType, as: "bus_type" }],
+        },
         {
           model: Booking,
-          as: 'bookings',
-          where: { booking_status: 'confirmed', payment_status: 'paid' },
+          as: "bookings",
+          where: { booking_status: "confirmed", payment_status: "paid" },
           required: false,
-          attributes: ['id', 'boarding_status', 'seat_numbers', 'total_seats'],
+          attributes: ["id", "boarding_status", "seat_numbers", "total_seats"],
         },
       ],
       order: [
-        ['trip_date', 'ASC'],
-        ['departure_time', 'ASC'],
+        ["trip_date", "ASC"],
+        ["departure_time", "ASC"],
       ],
     });
 
-    const formattedTrips = await Promise.all(trips.map(async (t) => {
-      const bookings = t.bookings || [];
-      const totalBookings = bookings.length;
-      const boardedCount = bookings.filter((b) => b.boarding_status === 'boarded').length;
-      const pendingBoardingCount = bookings.filter((b) => b.boarding_status === 'not_boarded').length;
+    const formattedTrips = await Promise.all(
+      trips.map(async (t) => {
+        const bookings = t.bookings || [];
+        const totalBookings = bookings.length;
+        const boardedCount = bookings.filter(
+          (b) => b.boarding_status === "boarded",
+        ).length;
+        const pendingBoardingCount = bookings.filter(
+          (b) => b.boarding_status === "not_boarded",
+        ).length;
 
-      let totalBookedSeats = 0;
-      bookings.forEach((b) => {
-        totalBookedSeats += (b.seat_numbers ? b.seat_numbers.length : b.total_seats || 1);
-      });
+        let totalBookedSeats = 0;
+        bookings.forEach((b) => {
+          totalBookedSeats += b.seat_numbers
+            ? b.seat_numbers.length
+            : b.total_seats || 1;
+        });
 
-      const stopSchedule = t.route_id
-        ? await getOrderedStopsForRoute(t.route_id, t.departure_time)
-        : [];
+        const stopSchedule = t.route_id
+          ? await getOrderedStopsForRoute(t.route_id, t.departure_time)
+          : [];
 
-      const departureState = getTripStartEligibility(t);
+        const departureState = getTripStartEligibility(t);
 
-      return {
-        trip_id: t.id,
-        schedule_code: t.schedule_code,
-        route_id: t.route_id,
-        route_name: t.route ? t.route.route_name : null,
-        source_city: t.route ? t.route.source_city : null,
-        destination_city: t.route ? t.route.destination_city : null,
-        trip_date: t.trip_date,
-        departure_time: t.departure_time,
-        arrival_time: t.arrival_time,
-        stop_schedule: stopSchedule,
-        status: t.status,
-        can_start_trip: departureState.can_start,
-        start_trip_message: departureState.message,
-        scheduled_departure_at: departureState.scheduled_at ? departureState.scheduled_at.toISOString() : null,
-        vehicle: t.vehicle ? {
-          id: t.vehicle.id,
-          vehicle_number: t.vehicle.registration_number || t.vehicle.vehicle_number,
-          model: t.vehicle.model,
-          bus_type: t.vehicle.bus_type?.name,
-        } : null,
-        summary: {
-          total_capacity: t.seat_capacity || 40,
-          total_bookings: totalBookings,
-          total_booked_seats: totalBookedSeats,
-          boarded_passengers: boardedCount,
-          pending_passengers: pendingBoardingCount,
-        },
-        started_at: t.started_at,
-        completed_at: t.completed_at,
-      };
-    }));
+        return {
+          trip_id: t.id,
+          schedule_code: t.schedule_code,
+          route_id: t.route_id,
+          route_name: t.route ? t.route.route_name : null,
+          source_city: t.route ? t.route.source_city : null,
+          destination_city: t.route ? t.route.destination_city : null,
+          trip_date: t.trip_date,
+          departure_time: t.departure_time,
+          arrival_time: t.arrival_time,
+          stop_schedule: stopSchedule,
+          status: t.status,
+          can_start_trip: departureState.can_start,
+          start_trip_message: departureState.message,
+          scheduled_departure_at: departureState.scheduled_at
+            ? departureState.scheduled_at.toISOString()
+            : null,
+          vehicle: t.vehicle
+            ? {
+                id: t.vehicle.id,
+                vehicle_number:
+                  t.vehicle.registration_number || t.vehicle.vehicle_number,
+                model: t.vehicle.model,
+                bus_type: t.vehicle.bus_type?.name,
+              }
+            : null,
+          summary: {
+            total_capacity: t.seat_capacity || 40,
+            total_bookings: totalBookings,
+            total_booked_seats: totalBookedSeats,
+            boarded_passengers: boardedCount,
+            pending_passengers: pendingBoardingCount,
+          },
+          started_at: t.started_at,
+          completed_at: t.completed_at,
+        };
+      }),
+    );
 
     res.json({
       status: 200,
@@ -368,34 +464,49 @@ exports.getTripDetails = async (req, res, next) => {
     const trip = await Trip.findOne({
       where: { id: req.params.id, driver_id: req.driver.id },
       include: [
-        { model: Route, as: 'route' },
-        { model: Vehicle, as: 'vehicle', include: [{ model: BusType, as: 'bus_type' }] },
+        { model: Route, as: "route" },
+        {
+          model: Vehicle,
+          as: "vehicle",
+          include: [{ model: BusType, as: "bus_type" }],
+        },
         {
           model: Booking,
-          as: 'bookings',
-          where: { booking_status: 'confirmed' },
+          as: "bookings",
+          where: { booking_status: "confirmed" },
           required: false,
           include: [
-            { model: Stop, as: 'origin_stop' },
-            { model: Stop, as: 'destination_stop' },
+            { model: Stop, as: "origin_stop" },
+            { model: Stop, as: "destination_stop" },
           ],
         },
       ],
     });
 
     if (!trip) {
-      return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found for this driver' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Trip assignment not found for this driver",
+        });
     }
 
     const tripData = trip.toJSON();
     if (tripData.route) {
-      tripData.route.stops = await getOrderedStopsForRoute(tripData.route.id, tripData.departure_time);
+      tripData.route.stops = await getOrderedStopsForRoute(
+        tripData.route.id,
+        tripData.departure_time,
+      );
     }
 
     const departureState = getTripStartEligibility(tripData);
     tripData.can_start_trip = departureState.can_start;
     tripData.start_trip_message = departureState.message;
-    tripData.scheduled_departure_at = departureState.scheduled_at ? departureState.scheduled_at.toISOString() : null;
+    tripData.scheduled_departure_at = departureState.scheduled_at
+      ? departureState.scheduled_at.toISOString()
+      : null;
 
     res.json({
       status: 200,
@@ -418,17 +529,23 @@ exports.getPassengerManifest = async (req, res, next) => {
 
     const trip = await Trip.findOne({
       where: { id: tripId, driver_id: req.driver.id },
-      include: [{ model: Route, as: 'route' }],
+      include: [{ model: Route, as: "route" }],
     });
 
     if (!trip) {
-      return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Trip assignment not found",
+        });
     }
 
     const whereBooking = {
       trip_id: tripId,
       [Op.or]: [
-        { booking_status: 'confirmed', payment_status: 'paid' },
+        { booking_status: "confirmed", payment_status: "paid" },
         // { booking_status: 'cancelled', payment_status: { [Op.in]: ['paid', 'refunded', 'partial_refund', 'pending'] } },
       ],
     };
@@ -447,16 +564,22 @@ exports.getPassengerManifest = async (req, res, next) => {
     const bookings = await Booking.findAll({
       where: whereBooking,
       include: [
-        { model: Stop, as: 'origin_stop', attributes: ['id', 'stop_name'] },
-        { model: Stop, as: 'destination_stop', attributes: ['id', 'stop_name'] },
+        { model: Stop, as: "origin_stop", attributes: ["id", "stop_name"] },
+        {
+          model: Stop,
+          as: "destination_stop",
+          attributes: ["id", "stop_name"],
+        },
       ],
-      order: [['id', 'ASC']],
+      order: [["id", "ASC"]],
     });
 
     const stopSchedule = trip.route_id
       ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time)
       : [];
-    const stopScheduleById = new Map(stopSchedule.map((stop) => [Number(stop.id), stop]));
+    const stopScheduleById = new Map(
+      stopSchedule.map((stop) => [Number(stop.id), stop]),
+    );
 
     const manifest = bookings.map((b) => ({
       booking_id: b.id,
@@ -465,11 +588,17 @@ exports.getPassengerManifest = async (req, res, next) => {
       passenger_mobile_masked: maskMobile(b.passenger_mobile),
       seat_numbers: b.seat_numbers,
       total_seats: b.total_seats,
-      origin_stop: b.origin_stop ? b.origin_stop.stop_name : 'Default Station',
-      destination_stop: b.destination_stop ? b.destination_stop.stop_name : 'Destination Station',
-      scheduled_pickup_time: stopScheduleById.get(Number(b.origin_stop_id))?.pickup_time || null,
-      scheduled_drop_time: stopScheduleById.get(Number(b.destination_stop_id))?.pickup_time || null,
-      boarding_status: b.booking_status === 'cancelled' ? 'cancelled' : b.boarding_status,
+      origin_stop: b.origin_stop ? b.origin_stop.stop_name : "Default Station",
+      destination_stop: b.destination_stop
+        ? b.destination_stop.stop_name
+        : "Destination Station",
+      scheduled_pickup_time:
+        stopScheduleById.get(Number(b.origin_stop_id))?.pickup_time || null,
+      scheduled_drop_time:
+        stopScheduleById.get(Number(b.destination_stop_id))?.pickup_time ||
+        null,
+      boarding_status:
+        b.booking_status === "cancelled" ? "cancelled" : b.boarding_status,
       booking_status: b.booking_status,
       cancellation_reason: b.cancellation_reason || null,
       cancelled_at: b.cancelled_at || null,
@@ -479,7 +608,9 @@ exports.getPassengerManifest = async (req, res, next) => {
     }));
 
     const totalCount = bookings.length;
-    const boardedCount = bookings.filter((b) => b.boarding_status === 'boarded').length;
+    const boardedCount = bookings.filter(
+      (b) => b.boarding_status === "boarded",
+    ).length;
 
     res.json({
       status: 200,
@@ -507,16 +638,36 @@ exports.getPassengerManifest = async (req, res, next) => {
  */
 exports.startTrip = async (req, res, next) => {
   try {
-    const trip = await Trip.findOne({ where: { id: req.params.id, driver_id: req.driver.id } });
+    const trip = await Trip.findOne({
+      where: { id: req.params.id, driver_id: req.driver.id },
+    });
     if (!trip) {
-      return res.status(404).json({ status: 404, success: false, message: 'Trip not found or not assigned to you' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Trip not found or not assigned to you",
+        });
     }
 
-    if (trip.status === 'Active') {
-      return res.status(400).json({ status: 400, success: false, message: 'Trip is already active' });
+    if (trip.status === "Active") {
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "Trip is already active",
+        });
     }
-    if (trip.status === 'Completed') {
-      return res.status(400).json({ status: 400, success: false, message: 'Trip is already completed' });
+    if (trip.status === "Completed") {
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "Trip is already completed",
+        });
     }
 
     const departureState = getTripStartEligibility(trip);
@@ -526,7 +677,9 @@ exports.startTrip = async (req, res, next) => {
         success: false,
         message: departureState.message,
         data: {
-          scheduled_departure_at: departureState.scheduled_at ? departureState.scheduled_at.toISOString() : null,
+          scheduled_departure_at: departureState.scheduled_at
+            ? departureState.scheduled_at.toISOString()
+            : null,
           trip_date: trip.trip_date,
           departure_time: trip.departure_time,
         },
@@ -535,24 +688,44 @@ exports.startTrip = async (req, res, next) => {
 
     const startedAt = new Date();
     await trip.update({
-      status: 'Active',
+      status: "Active",
       started_at: startedAt,
     });
 
     // Check if starting GPS coordinates were provided or exist in DriverDetail
-    const detail = await DriverDetail.findOne({ where: { driver_id: req.driver.id } });
-    const rawLat = req.body?.latitude != null ? req.body.latitude : detail?.latitude;
-    const rawLng = req.body?.longitude != null ? req.body.longitude : detail?.longitude;
-    const startLat = rawLat != null && rawLat !== '' ? Number(rawLat) : null;
-    const startLng = rawLng != null && rawLng !== '' ? Number(rawLng) : null;
+    const detail = await DriverDetail.findOne({
+      where: { driver_id: req.driver.id },
+    });
+    const rawLat =
+      req.body?.latitude != null ? req.body.latitude : detail?.latitude;
+    const rawLng =
+      req.body?.longitude != null ? req.body.longitude : detail?.longitude;
+    const startLat = rawLat != null && rawLat !== "" ? Number(rawLat) : null;
+    const startLng = rawLng != null && rawLng !== "" ? Number(rawLng) : null;
 
     let initialLocation = null;
-    if (startLat != null && startLng != null && Number.isFinite(startLat) && Number.isFinite(startLng)
-        && Math.abs(startLat) <= 90 && Math.abs(startLng) <= 180) {
-      const rawSpeed = req.body?.speed != null ? req.body.speed : detail?.location_speed_kmh;
-      const rawHeading = req.body?.heading != null ? req.body.heading : detail?.location_heading;
-      const startSpeed = rawSpeed != null && rawSpeed !== '' && Number.isFinite(Number(rawSpeed)) ? Number(rawSpeed) : null;
-      const startHeading = rawHeading != null && rawHeading !== '' && Number.isFinite(Number(rawHeading)) ? Number(rawHeading) : null;
+    if (
+      startLat != null &&
+      startLng != null &&
+      Number.isFinite(startLat) &&
+      Number.isFinite(startLng) &&
+      Math.abs(startLat) <= 90 &&
+      Math.abs(startLng) <= 180
+    ) {
+      const rawSpeed =
+        req.body?.speed != null ? req.body.speed : detail?.location_speed_kmh;
+      const rawHeading =
+        req.body?.heading != null ? req.body.heading : detail?.location_heading;
+      const startSpeed =
+        rawSpeed != null && rawSpeed !== "" && Number.isFinite(Number(rawSpeed))
+          ? Number(rawSpeed)
+          : null;
+      const startHeading =
+        rawHeading != null &&
+        rawHeading !== "" &&
+        Number.isFinite(Number(rawHeading))
+          ? Number(rawHeading)
+          : null;
 
       initialLocation = await TripLocation.create({
         trip_id: trip.id,
@@ -573,7 +746,7 @@ exports.startTrip = async (req, res, next) => {
     res.json({
       status: 200,
       success: true,
-      message: 'Trip started successfully',
+      message: "Trip started successfully",
       data: {
         trip_id: trip.id,
         status: trip.status,
@@ -602,25 +775,49 @@ exports.completeTrip = async (req, res, next) => {
     });
     if (!trip) {
       await transaction.rollback();
-      return res.status(404).json({ status: 404, success: false, message: 'Trip not found or not assigned to you' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Trip not found or not assigned to you",
+        });
     }
 
-    if (trip.status === 'Completed') {
+    if (trip.status === "Completed") {
       await transaction.rollback();
-      return res.status(400).json({ status: 400, success: false, message: 'Trip is already completed' });
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "Trip is already completed",
+        });
     }
 
     // 1. Resolve Driver GPS Coordinates (from body, or live DriverDetail, or latest TripLocation breadcrumb)
-    const detail = await DriverDetail.findOne({ where: { driver_id: req.driver.id } });
-    const rawLat = req.body?.latitude != null ? req.body.latitude : detail?.latitude;
-    const rawLng = req.body?.longitude != null ? req.body.longitude : detail?.longitude;
-    let currLat = rawLat != null && rawLat !== '' ? Number(rawLat) : null;
-    let currLng = rawLng != null && rawLng !== '' ? Number(rawLng) : null;
+    const detail = await DriverDetail.findOne({
+      where: { driver_id: req.driver.id },
+    });
+    const rawLat =
+      req.body?.latitude != null ? req.body.latitude : detail?.latitude;
+    const rawLng =
+      req.body?.longitude != null ? req.body.longitude : detail?.longitude;
+    let currLat = rawLat != null && rawLat !== "" ? Number(rawLat) : null;
+    let currLng = rawLng != null && rawLng !== "" ? Number(rawLng) : null;
 
-    if (currLat == null || currLng == null || !Number.isFinite(currLat) || !Number.isFinite(currLng)) {
+    if (
+      currLat == null ||
+      currLng == null ||
+      !Number.isFinite(currLat) ||
+      !Number.isFinite(currLng)
+    ) {
       const latestBreadcrumb = await TripLocation.findOne({
         where: { trip_id: trip.id, driver_id: req.driver.id },
-        order: [['recorded_at', 'DESC'], ['id', 'DESC']],
+        order: [
+          ["recorded_at", "DESC"],
+          ["id", "DESC"],
+        ],
       });
       if (latestBreadcrumb) {
         currLat = Number(latestBreadcrumb.latitude);
@@ -629,46 +826,101 @@ exports.completeTrip = async (req, res, next) => {
     }
 
     // Handle GPS permission / availability issues gracefully
-    const hasValidCoords = currLat != null && currLng != null && Number.isFinite(currLat) && Number.isFinite(currLng)
-      && Math.abs(currLat) <= 90 && Math.abs(currLng) <= 180;
+    const hasValidCoords =
+      currLat != null &&
+      currLng != null &&
+      Number.isFinite(currLat) &&
+      Number.isFinite(currLng) &&
+      Math.abs(currLat) <= 90 &&
+      Math.abs(currLng) <= 180;
 
     if (!hasValidCoords) {
       await transaction.rollback();
       return res.status(400).json({
         status: 400,
         success: false,
-        code: 'LOCATION_REQUIRED',
-        message: 'Live GPS location is required to verify distance to final destination. Please ensure location services are enabled.',
+        code: "LOCATION_REQUIRED",
+        message:
+          "Live GPS location is required to verify distance to final destination. Please ensure location services are enabled.",
       });
     }
 
     // 2. Resolve Final Stoppage / Destination Coordinates for this Route
-    const stops = trip.route_id ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time) : [];
-    const finalStop = stops && stops.length > 0 ? stops[stops.length - 1] : null;
+    const stops = trip.route_id
+      ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time)
+      : [];
+    const finalStop =
+      stops && stops.length > 0 ? stops[stops.length - 1] : null;
 
     let distanceMeters = null;
     let proximityResult = null;
 
-    if (finalStop && finalStop.latitude != null && finalStop.longitude != null) {
+    if (
+      finalStop &&
+      finalStop.latitude != null &&
+      finalStop.longitude != null
+    ) {
       const stopLat = Number(finalStop.latitude);
       const stopLng = Number(finalStop.longitude);
 
       if (Number.isFinite(stopLat) && Number.isFinite(stopLng)) {
-        const accuracy = req.body?.accuracy != null ? Number(req.body.accuracy) : null;
+        const accuracy =
+          req.body?.accuracy != null ? Number(req.body.accuracy) : null;
+
         const allowedRadius = await getCompletionRadiusMeters();
+
+        // First calculate proximity
+        proximityResult = checkProximityToStop(
+          currLat,
+          currLng,
+          stopLat,
+          stopLng,
+          allowedRadius,
+          accuracy,
+        );
+
+        // Then get calculated distance
         distanceMeters = proximityResult.rawDistanceMeters;
-        proximityResult = checkProximityToStop(currLat, currLng, stopLat, stopLng, allowedRadius, accuracy);
+
+        if (!proximityResult.isWithin) {
+          await transaction.rollback();
+
+          return res.status(400).json({
+            status: 400,
+            success: false,
+            code: "OUTSIDE_RADIUS",
+            message: `You must reach within ${allowedRadius} meters of the final destination to complete this trip.`,
+            data: {
+              distance_meters: distanceMeters,
+              effective_distance_meters:
+                proximityResult.effectiveDistanceMeters,
+              allowed_radius_meters: allowedRadius,
+              accuracy_meters: accuracy,
+              final_stop: {
+                id: finalStop.id,
+                stop_name: finalStop.stop_name,
+                latitude: stopLat,
+                longitude: stopLng,
+              },
+              driver_location: {
+                latitude: currLat,
+                longitude: currLng,
+              },
+            },
+          });
+        }
 
         if (!proximityResult.isWithin) {
           await transaction.rollback();
           return res.status(400).json({
             status: 400,
             success: false,
-            code: 'OUTSIDE_RADIUS',
+            code: "OUTSIDE_RADIUS",
             message: `You must reach within ${allowedRadius} meters of the final destination to complete this trip.`,
             data: {
               distance_meters: distanceMeters,
-              effective_distance_meters: proximityResult.effectiveDistanceMeters,
+              effective_distance_meters:
+                proximityResult.effectiveDistanceMeters,
               allowed_radius_meters: allowedRadius,
               accuracy_meters: accuracy,
               final_stop: {
@@ -688,10 +940,13 @@ exports.completeTrip = async (req, res, next) => {
     }
 
     // 3. Complete Trip
-    await trip.update({
-      status: 'Completed',
-      completed_at: new Date(),
-    }, { transaction });
+    await trip.update(
+      {
+        status: "Completed",
+        completed_at: new Date(),
+      },
+      { transaction },
+    );
 
     await settleTripPackageRides({ tripId: trip.id, transaction });
     await transaction.commit();
@@ -700,15 +955,28 @@ exports.completeTrip = async (req, res, next) => {
     try {
       await releaseUnusedCouponOnTripCompletion(trip.id);
     } catch (couponErr) {
-      console.warn('[Driver completeTrip] Error releasing unused coupons:', couponErr.message);
+      console.warn(
+        "[Driver completeTrip] Error releasing unused coupons:",
+        couponErr.message,
+      );
     }
 
     // Record final ending GPS coordinates
     let finalLocation = null;
-    const rawSpeed = req.body?.speed != null ? req.body.speed : detail?.location_speed_kmh;
-    const rawHeading = req.body?.heading != null ? req.body.heading : detail?.location_heading;
-    const endSpeed = rawSpeed != null && rawSpeed !== '' && Number.isFinite(Number(rawSpeed)) ? Number(rawSpeed) : 0;
-    const endHeading = rawHeading != null && rawHeading !== '' && Number.isFinite(Number(rawHeading)) ? Number(rawHeading) : null;
+    const rawSpeed =
+      req.body?.speed != null ? req.body.speed : detail?.location_speed_kmh;
+    const rawHeading =
+      req.body?.heading != null ? req.body.heading : detail?.location_heading;
+    const endSpeed =
+      rawSpeed != null && rawSpeed !== "" && Number.isFinite(Number(rawSpeed))
+        ? Number(rawSpeed)
+        : 0;
+    const endHeading =
+      rawHeading != null &&
+      rawHeading !== "" &&
+      Number.isFinite(Number(rawHeading))
+        ? Number(rawHeading)
+        : null;
 
     finalLocation = await TripLocation.create({
       trip_id: trip.id,
@@ -728,19 +996,21 @@ exports.completeTrip = async (req, res, next) => {
     res.json({
       status: 200,
       success: true,
-      message: 'Trip completed successfully',
+      message: "Trip completed successfully",
       data: {
         trip_id: trip.id,
         status: trip.status,
         completed_at: trip.completed_at,
         distance_to_final_stop_meters: distanceMeters,
         allowed_radius_meters: COMPLETION_RADIUS_METERS,
-        final_stop: finalStop ? {
-          id: finalStop.id,
-          stop_name: finalStop.stop_name,
-          latitude: finalStop.latitude,
-          longitude: finalStop.longitude,
-        } : null,
+        final_stop: finalStop
+          ? {
+              id: finalStop.id,
+              stop_name: finalStop.stop_name,
+              latitude: finalStop.latitude,
+              longitude: finalStop.longitude,
+            }
+          : null,
         final_location_recorded: Boolean(finalLocation),
       },
     });
@@ -759,27 +1029,44 @@ exports.checkCompletionEligibility = async (req, res, next) => {
     const tripId = req.params.id;
     const trip = await Trip.findOne({
       where: { id: tripId, driver_id: req.driver.id },
-      include: [{ model: Route, as: 'route' }],
+      include: [{ model: Route, as: "route" }],
     });
     if (!trip) {
-      return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Trip assignment not found",
+        });
     }
 
-    const stops = trip.route_id ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time) : [];
-    const finalStop = stops && stops.length > 0 ? stops[stops.length - 1] : null;
+    const stops = trip.route_id
+      ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time)
+      : [];
+    const finalStop =
+      stops && stops.length > 0 ? stops[stops.length - 1] : null;
 
-    const detail = await DriverDetail.findOne({ where: { driver_id: req.driver.id } });
-    const rawLat = req.query?.latitude != null ? req.query.latitude : detail?.latitude;
-    const rawLng = req.query?.longitude != null ? req.query.longitude : detail?.longitude;
-    const accuracy = req.query?.accuracy != null ? Number(req.query.accuracy) : null;
+    const detail = await DriverDetail.findOne({
+      where: { driver_id: req.driver.id },
+    });
+    const rawLat =
+      req.query?.latitude != null ? req.query.latitude : detail?.latitude;
+    const rawLng =
+      req.query?.longitude != null ? req.query.longitude : detail?.longitude;
+    const accuracy =
+      req.query?.accuracy != null ? Number(req.query.accuracy) : null;
 
-    let currLat = rawLat != null && rawLat !== '' ? Number(rawLat) : null;
-    let currLng = rawLng != null && rawLng !== '' ? Number(rawLng) : null;
+    let currLat = rawLat != null && rawLat !== "" ? Number(rawLat) : null;
+    let currLng = rawLng != null && rawLng !== "" ? Number(rawLng) : null;
 
     if (currLat == null || currLng == null) {
       const latestPing = await TripLocation.findOne({
         where: { trip_id: trip.id, driver_id: req.driver.id },
-        order: [['recorded_at', 'DESC'], ['id', 'DESC']],
+        order: [
+          ["recorded_at", "DESC"],
+          ["id", "DESC"],
+        ],
       });
       if (latestPing) {
         currLat = Number(latestPing.latitude);
@@ -789,13 +1076,17 @@ exports.checkCompletionEligibility = async (req, res, next) => {
 
     const allowedRadius = await getCompletionRadiusMeters();
 
-    if (!finalStop || finalStop.latitude == null || finalStop.longitude == null) {
+    if (
+      !finalStop ||
+      finalStop.latitude == null ||
+      finalStop.longitude == null
+    ) {
       return res.json({
         status: 200,
         success: true,
         data: {
           can_complete: true,
-          message: 'Final stop coordinates not set; proximity check bypassed',
+          message: "Final stop coordinates not set; proximity check bypassed",
           distance_meters: 0,
           allowed_radius_meters: allowedRadius,
         },
@@ -809,7 +1100,8 @@ exports.checkCompletionEligibility = async (req, res, next) => {
         data: {
           can_complete: false,
           has_location: false,
-          message: 'Location permission denied or GPS unavailable. Please enable live GPS location.',
+          message:
+            "Location permission denied or GPS unavailable. Please enable live GPS location.",
           distance_meters: null,
           allowed_radius_meters: allowedRadius,
           final_stop: {
@@ -822,7 +1114,14 @@ exports.checkCompletionEligibility = async (req, res, next) => {
       });
     }
 
-    const proximity = checkProximityToStop(currLat, currLng, finalStop.latitude, finalStop.longitude, allowedRadius, accuracy);
+    const proximity = checkProximityToStop(
+      currLat,
+      currLng,
+      finalStop.latitude,
+      finalStop.longitude,
+      allowedRadius,
+      accuracy,
+    );
 
     return res.json({
       status: 200,
@@ -862,20 +1161,27 @@ exports.checkCompletionEligibility = async (req, res, next) => {
  */
 exports.scanBoardingPass = async (req, res, next) => {
   try {
-    const { trip_id, assignment_id, stop_id, boarding_pass_code } = req.body || {};
+    const { trip_id, assignment_id, stop_id, boarding_pass_code } =
+      req.body || {};
     const targetTripId = trip_id || assignment_id;
 
     if (!boarding_pass_code) {
-      return res.status(400).json({ status: 400, success: false, message: 'Boarding pass code is required' });
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "Boarding pass code is required",
+        });
     }
 
     // Find booking by QR / boarding_pass_code
     const booking = await Booking.findOne({
       where: { boarding_pass_code },
       include: [
-        { model: Trip, as: 'trip', include: [{ model: Route, as: 'route' }] },
-        { model: Stop, as: 'origin_stop' },
-        { model: Stop, as: 'destination_stop' },
+        { model: Trip, as: "trip", include: [{ model: Route, as: "route" }] },
+        { model: Stop, as: "origin_stop" },
+        { model: Stop, as: "destination_stop" },
       ],
     });
 
@@ -883,32 +1189,35 @@ exports.scanBoardingPass = async (req, res, next) => {
       return res.status(404).json({
         status: 404,
         success: false,
-        message: 'Invalid boarding pass code. Ticket not found.',
+        message: "Invalid boarding pass code. Ticket not found.",
       });
     }
 
-    if (booking.booking_status === 'cancelled') {
+    if (booking.booking_status === "cancelled") {
       return res.status(400).json({
         status: 400,
         success: false,
-        message: `This ticket was cancelled by the passenger (${booking.cancellation_reason || 'Cancelled'}). Boarding is not allowed.`,
+        message: `This ticket was cancelled by the passenger (${booking.cancellation_reason || "Cancelled"}). Boarding is not allowed.`,
         data: {
           booking_id: booking.id,
           booking_reference: booking.booking_reference,
           passenger_name: booking.passenger_name,
-          booking_status: 'cancelled',
-          boarding_status: 'cancelled',
+          booking_status: "cancelled",
+          boarding_status: "cancelled",
           cancellation_reason: booking.cancellation_reason,
           cancelled_at: booking.cancelled_at,
         },
       });
     }
 
-    if (booking.booking_status !== 'confirmed' || booking.payment_status !== 'paid') {
+    if (
+      booking.booking_status !== "confirmed" ||
+      booking.payment_status !== "paid"
+    ) {
       return res.status(400).json({
         status: 400,
         success: false,
-        message: 'This booking is not confirmed or payment is pending/failed',
+        message: "This booking is not confirmed or payment is pending/failed",
       });
     }
 
@@ -917,30 +1226,36 @@ exports.scanBoardingPass = async (req, res, next) => {
       return res.status(400).json({
         status: 400,
         success: false,
-        message: 'This booking is for a different bus trip schedule',
+        message: "This booking is for a different bus trip schedule",
       });
     }
 
     // Validation 2: Stop Level Matching (if current stop_id provided)
-    if (stop_id && booking.origin_stop_id && parseInt(booking.origin_stop_id) !== parseInt(stop_id)) {
+    if (
+      stop_id &&
+      booking.origin_stop_id &&
+      parseInt(booking.origin_stop_id) !== parseInt(stop_id)
+    ) {
       return res.status(400).json({
         status: 400,
         success: false,
-        message: `Passenger pickup is at a different stop (${booking.origin_stop ? booking.origin_stop.stop_name : 'another stop'})`,
+        message: `Passenger pickup is at a different stop (${booking.origin_stop ? booking.origin_stop.stop_name : "another stop"})`,
         data: {
           booking_id: booking.id,
           expected_stop_id: booking.origin_stop_id,
-          expected_stop_name: booking.origin_stop ? booking.origin_stop.stop_name : null,
+          expected_stop_name: booking.origin_stop
+            ? booking.origin_stop.stop_name
+            : null,
         },
       });
     }
 
     // Validation 3: Check Boarding Status
-    if (booking.boarding_status === 'boarded') {
+    if (booking.boarding_status === "boarded") {
       return res.status(400).json({
         status: 400,
         success: false,
-        message: 'Passenger has already boarded this bus',
+        message: "Passenger has already boarded this bus",
         data: {
           booking_id: booking.id,
           passenger_name: booking.passenger_name,
@@ -953,7 +1268,7 @@ exports.scanBoardingPass = async (req, res, next) => {
     res.json({
       status: 200,
       success: true,
-      message: 'Boarding pass verified successfully',
+      message: "Boarding pass verified successfully",
       data: {
         booking_id: booking.id,
         booking_reference: booking.booking_reference,
@@ -961,9 +1276,11 @@ exports.scanBoardingPass = async (req, res, next) => {
         passenger_mobile_masked: maskMobile(booking.passenger_mobile),
         seat_numbers: booking.seat_numbers,
         origin_stop_id: booking.origin_stop_id,
-        origin: booking.origin_stop ? booking.origin_stop.stop_name : 'Origin',
+        origin: booking.origin_stop ? booking.origin_stop.stop_name : "Origin",
         destination_stop_id: booking.destination_stop_id,
-        destination: booking.destination_stop ? booking.destination_stop.stop_name : 'Destination',
+        destination: booking.destination_stop
+          ? booking.destination_stop.stop_name
+          : "Destination",
         boarding_pin_required: true,
         boarding_status: booking.boarding_status,
       },
@@ -985,7 +1302,7 @@ exports.confirmBoarding = async (req, res, next) => {
       return res.status(400).json({
         status: 400,
         success: false,
-        message: 'trip_id and boarding_pin are required',
+        message: "trip_id and boarding_pin are required",
       });
     }
 
@@ -996,34 +1313,54 @@ exports.confirmBoarding = async (req, res, next) => {
       },
     });
     if (!booking) {
-      return res.status(404).json({ status: 404, success: false, message: 'Passenger booking not found for this trip and PIN' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Passenger booking not found for this trip and PIN",
+        });
     }
 
-    if (booking.booking_status === 'cancelled') {
+    if (booking.booking_status === "cancelled") {
       return res.status(400).json({
         status: 400,
         success: false,
-        message: `Cannot board passenger. Booking was cancelled (${booking.cancellation_reason || 'Cancelled by passenger'}).`,
+        message: `Cannot board passenger. Booking was cancelled (${booking.cancellation_reason || "Cancelled by passenger"}).`,
       });
     }
 
-    if (booking.booking_status !== 'confirmed' || booking.payment_status !== 'paid') {
+    if (
+      booking.booking_status !== "confirmed" ||
+      booking.payment_status !== "paid"
+    ) {
       return res.status(400).json({
         status: 400,
         success: false,
-        message: 'Cannot board passenger. Booking is not confirmed or payment is pending/failed',
+        message:
+          "Cannot board passenger. Booking is not confirmed or payment is pending/failed",
       });
     }
 
-    if (stop_id && booking.origin_stop_id && parseInt(booking.origin_stop_id) !== parseInt(stop_id)) {
-      return res.status(400).json({ status: 400, success: false, message: 'Booking pickup stop does not match specified stop' });
+    if (
+      stop_id &&
+      booking.origin_stop_id &&
+      parseInt(booking.origin_stop_id) !== parseInt(stop_id)
+    ) {
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "Booking pickup stop does not match specified stop",
+        });
     }
 
-    if (booking.boarding_status === 'boarded') {
+    if (booking.boarding_status === "boarded") {
       return res.status(400).json({
         status: 400,
         success: false,
-        message: 'Passenger already boarded',
+        message: "Passenger already boarded",
         data: {
           booking_id: booking.id,
           boarded_at: booking.boarded_at,
@@ -1032,10 +1369,10 @@ exports.confirmBoarding = async (req, res, next) => {
     }
 
     const now = new Date();
-    const timeString = now.toTimeString().split(' ')[0];
+    const timeString = now.toTimeString().split(" ")[0];
 
     await booking.update({
-      boarding_status: 'boarded',
+      boarding_status: "boarded",
       boarded_at: now,
       boarding_time: timeString,
     });
@@ -1043,7 +1380,7 @@ exports.confirmBoarding = async (req, res, next) => {
     res.json({
       status: 200,
       success: true,
-      message: 'Passenger boarding confirmed successfully',
+      message: "Passenger boarding confirmed successfully",
       data: {
         booking_id: booking.id,
         booking_reference: booking.booking_reference,
@@ -1067,14 +1404,20 @@ exports.manualVerifyBoarding = async (req, res, next) => {
   try {
     const { trip_id, query } = req.body || {};
     if (!trip_id || !query) {
-      return res.status(400).json({ status: 400, success: false, message: 'trip_id and query (phone/ref/seat) are required' });
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "trip_id and query (phone/ref/seat) are required",
+        });
     }
 
     const booking = await Booking.findOne({
       where: {
         trip_id,
-        booking_status: 'confirmed',
-        payment_status: 'paid',
+        booking_status: "confirmed",
+        payment_status: "paid",
         [Op.or]: [
           { booking_reference: query },
           { passenger_mobile: query },
@@ -1084,7 +1427,13 @@ exports.manualVerifyBoarding = async (req, res, next) => {
     });
 
     if (!booking) {
-      return res.status(404).json({ status: 404, success: false, message: 'Passenger booking not found for this trip' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Passenger booking not found for this trip",
+        });
     }
 
     res.json({
@@ -1113,20 +1462,55 @@ exports.manualVerifyBoarding = async (req, res, next) => {
  */
 exports.updateLocation = async (req, res, next) => {
   try {
-    const { latitude, longitude, speed, heading, trip_id, accuracy, battery_level, recorded_at } = req.body || {};
+    const {
+      latitude,
+      longitude,
+      speed,
+      heading,
+      trip_id,
+      accuracy,
+      battery_level,
+      recorded_at,
+    } = req.body || {};
     const parsedLatitude = Number(latitude);
     const parsedLongitude = Number(longitude);
-    if (latitude == null || longitude == null || latitude === '' || longitude === ''
-      || !Number.isFinite(parsedLatitude) || !Number.isFinite(parsedLongitude)
-      || Math.abs(parsedLatitude) > 90 || Math.abs(parsedLongitude) > 180) {
-      return res.status(400).json({ status: 400, success: false, message: 'Latitude and Longitude are required' });
+    if (
+      latitude == null ||
+      longitude == null ||
+      latitude === "" ||
+      longitude === "" ||
+      !Number.isFinite(parsedLatitude) ||
+      !Number.isFinite(parsedLongitude) ||
+      Math.abs(parsedLatitude) > 90 ||
+      Math.abs(parsedLongitude) > 180
+    ) {
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "Latitude and Longitude are required",
+        });
     }
 
-    const parsedSpeed = speed == null || speed === '' ? null : Number(speed);
-    const parsedHeading = heading == null || heading === '' ? null : Number(heading);
-    if ((parsedSpeed !== null && (!Number.isFinite(parsedSpeed) || parsedSpeed < 0))
-      || (parsedHeading !== null && (!Number.isFinite(parsedHeading) || parsedHeading < 0 || parsedHeading >= 360))) {
-      return res.status(400).json({ status: 400, success: false, message: 'Speed or heading is invalid' });
+    const parsedSpeed = speed == null || speed === "" ? null : Number(speed);
+    const parsedHeading =
+      heading == null || heading === "" ? null : Number(heading);
+    if (
+      (parsedSpeed !== null &&
+        (!Number.isFinite(parsedSpeed) || parsedSpeed < 0)) ||
+      (parsedHeading !== null &&
+        (!Number.isFinite(parsedHeading) ||
+          parsedHeading < 0 ||
+          parsedHeading >= 360))
+    ) {
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "Speed or heading is invalid",
+        });
     }
 
     const driverId = req.driver.id;
@@ -1134,20 +1518,31 @@ exports.updateLocation = async (req, res, next) => {
     // Determine associated trip
     let activeTrip = null;
     if (trip_id) {
-      activeTrip = await Trip.findOne({ where: { id: trip_id, driver_id: driverId } });
+      activeTrip = await Trip.findOne({
+        where: { id: trip_id, driver_id: driverId },
+      });
       if (!activeTrip) {
-        return res.status(403).json({ status: 403, success: false, message: 'Trip is not assigned to this driver' });
+        return res
+          .status(403)
+          .json({
+            status: 403,
+            success: false,
+            message: "Trip is not assigned to this driver",
+          });
       }
     } else {
       // Auto-detect currently active trip for this driver
       activeTrip = await Trip.findOne({
-        where: { driver_id: driverId, status: 'Active' },
-        order: [['started_at', 'DESC'], ['id', 'DESC']],
+        where: { driver_id: driverId, status: "Active" },
+        order: [
+          ["started_at", "DESC"],
+          ["id", "DESC"],
+        ],
       });
     }
 
     let detail = await DriverDetail.findOne({ where: { driver_id: driverId } });
-    const currentTripId = activeTrip ? activeTrip.id : (trip_id || null);
+    const currentTripId = activeTrip ? activeTrip.id : trip_id || null;
 
     if (detail) {
       await detail.update({
@@ -1172,8 +1567,12 @@ exports.updateLocation = async (req, res, next) => {
     // When trips start, store per-trip driver location in database
     let recordedBreadcrumb = null;
     if (activeTrip) {
-      const parsedAccuracy = accuracy == null || accuracy === '' ? null : Number(accuracy);
-      const parsedBattery = battery_level == null || battery_level === '' ? null : Number(battery_level);
+      const parsedAccuracy =
+        accuracy == null || accuracy === "" ? null : Number(accuracy);
+      const parsedBattery =
+        battery_level == null || battery_level === ""
+          ? null
+          : Number(battery_level);
 
       recordedBreadcrumb = await TripLocation.create({
         trip_id: activeTrip.id,
@@ -1192,7 +1591,7 @@ exports.updateLocation = async (req, res, next) => {
     res.json({
       status: 200,
       success: true,
-      message: 'Location updated successfully',
+      message: "Location updated successfully",
       data: {
         driver_id: driverId,
         latitude: parsedLatitude,
@@ -1200,7 +1599,7 @@ exports.updateLocation = async (req, res, next) => {
         speed: parsedSpeed,
         heading: parsedHeading,
         trip_id: currentTripId,
-        is_trip_active: Boolean(activeTrip && activeTrip.status === 'Active'),
+        is_trip_active: Boolean(activeTrip && activeTrip.status === "Active"),
         location_stored: Boolean(recordedBreadcrumb),
         breadcrumb_id: recordedBreadcrumb ? recordedBreadcrumb.id : null,
         updated_at: new Date(),
@@ -1221,27 +1620,52 @@ exports.getTripLocations = async (req, res, next) => {
     const trip = await Trip.findOne({
       where: { id: tripId },
       include: [
-        { model: Driver, as: 'driver', attributes: ['id', 'name', 'mobile'] },
-        { model: Vehicle, as: 'vehicle', attributes: ['id', 'registration_number', 'company_model'] },
-        { model: Route, as: 'route', attributes: ['id', 'route_name', 'origin_city', 'destination_city'] },
+        { model: Driver, as: "driver", attributes: ["id", "name", "mobile"] },
+        {
+          model: Vehicle,
+          as: "vehicle",
+          attributes: ["id", "registration_number", "company_model"],
+        },
+        {
+          model: Route,
+          as: "route",
+          attributes: ["id", "route_name", "origin_city", "destination_city"],
+        },
       ],
     });
 
     if (!trip) {
-      return res.status(404).json({ status: 404, success: false, message: 'Trip not found' });
+      return res
+        .status(404)
+        .json({ status: 404, success: false, message: "Trip not found" });
     }
 
     // Driver can only access trips assigned to them
     if (req.driver && Number(trip.driver_id) !== Number(req.driver.id)) {
-      return res.status(403).json({ status: 403, success: false, message: 'Unauthorized access to trip locations' });
+      return res
+        .status(403)
+        .json({
+          status: 403,
+          success: false,
+          message: "Unauthorized access to trip locations",
+        });
     }
 
     const { limit = 1000 } = req.query;
     const locations = await TripLocation.findAll({
       where: { trip_id: tripId },
-      order: [['recorded_at', 'ASC']],
+      order: [["recorded_at", "ASC"]],
       limit: Math.min(5000, Math.max(1, parseInt(limit, 10) || 1000)),
-      attributes: ['id', 'latitude', 'longitude', 'speed_kmh', 'heading', 'accuracy', 'battery_level', 'recorded_at'],
+      attributes: [
+        "id",
+        "latitude",
+        "longitude",
+        "speed_kmh",
+        "heading",
+        "accuracy",
+        "battery_level",
+        "recorded_at",
+      ],
     });
 
     res.json({
@@ -1278,20 +1702,22 @@ exports.getTripHistory = async (req, res, next) => {
     const l = Math.min(100, Math.max(1, parseInt(limit)));
 
     const { count, rows } = await Trip.findAndCountAll({
-      where: { driver_id: driverId, status: 'Completed' },
+      where: { driver_id: driverId, status: "Completed" },
       include: [
-        { model: Route, as: 'route' },
-        { model: Vehicle, as: 'vehicle' },
-        { model: Booking, as: 'bookings' },
+        { model: Route, as: "route" },
+        { model: Vehicle, as: "vehicle" },
+        { model: Booking, as: "bookings" },
       ],
       offset: (p - 1) * l,
       limit: l,
-      order: [['completed_at', 'DESC']],
+      order: [["completed_at", "DESC"]],
     });
 
     const history = rows.map((t) => {
       const bookings = t.bookings || [];
-      const boarded = bookings.filter((b) => b.boarding_status === 'boarded').length;
+      const boarded = bookings.filter(
+        (b) => b.boarding_status === "boarded",
+      ).length;
       return {
         trip_id: t.id,
         schedule_code: t.schedule_code,
@@ -1330,8 +1756,8 @@ exports.getEarningsSummary = async (req, res, next) => {
 
     // Aggregate completed trips stats
     const completedTrips = await Trip.findAll({
-      where: { driver_id: driverId, status: 'Completed' },
-      include: [{ model: Booking, as: 'bookings' }],
+      where: { driver_id: driverId, status: "Completed" },
+      include: [{ model: Booking, as: "bookings" }],
     });
 
     const totalTripsCompleted = completedTrips.length;
@@ -1339,7 +1765,9 @@ exports.getEarningsSummary = async (req, res, next) => {
 
     completedTrips.forEach((t) => {
       if (t.bookings) {
-        totalPassengersBoarded += t.bookings.filter((b) => b.boarding_status === 'boarded').length;
+        totalPassengersBoarded += t.bookings.filter(
+          (b) => b.boarding_status === "boarded",
+        ).length;
       }
     });
 
@@ -1374,14 +1802,26 @@ exports.getDriverHome = async (req, res, next) => {
     const activeTrip = await Trip.findOne({
       where: {
         driver_id: driverId,
-        status: { [Op.in]: ['Active', 'Scheduled'] },
+        status: { [Op.in]: ["Active", "Scheduled"] },
       },
       include: [
-        { model: Route, as: 'route' },
-        { model: Vehicle, as: 'vehicle', include: [{ model: BusType, as: 'bus_type' }] },
-        { model: Booking, as: 'bookings', where: { booking_status: 'confirmed', payment_status: 'paid' }, required: false },
+        { model: Route, as: "route" },
+        {
+          model: Vehicle,
+          as: "vehicle",
+          include: [{ model: BusType, as: "bus_type" }],
+        },
+        {
+          model: Booking,
+          as: "bookings",
+          where: { booking_status: "confirmed", payment_status: "paid" },
+          required: false,
+        },
       ],
-      order: [['status', 'ASC'], ['departure_time', 'ASC']],
+      order: [
+        ["status", "ASC"],
+        ["departure_time", "ASC"],
+      ],
     });
 
     if (!activeTrip) {
@@ -1389,7 +1829,11 @@ exports.getDriverHome = async (req, res, next) => {
         status: 200,
         success: true,
         data: {
-          driver: { id: req.driver.id, name: req.driver.name, online_status: req.driver.online_status },
+          driver: {
+            id: req.driver.id,
+            name: req.driver.name,
+            online_status: req.driver.online_status,
+          },
           today: { date: today },
           current_trip: null,
           current_stop: null,
@@ -1401,10 +1845,19 @@ exports.getDriverHome = async (req, res, next) => {
 
     const bookings = activeTrip.bookings || [];
     const totalBookings = bookings.length;
-    const boardedCount = bookings.filter((b) => b.boarding_status === 'boarded').length;
-    const pendingCount = bookings.filter((b) => b.boarding_status === 'not_boarded').length;
+    const boardedCount = bookings.filter(
+      (b) => b.boarding_status === "boarded",
+    ).length;
+    const pendingCount = bookings.filter(
+      (b) => b.boarding_status === "not_boarded",
+    ).length;
 
-    const stops = activeTrip.route_id ? await getOrderedStopsForRoute(activeTrip.route_id, activeTrip.departure_time) : [];
+    const stops = activeTrip.route_id
+      ? await getOrderedStopsForRoute(
+          activeTrip.route_id,
+          activeTrip.departure_time,
+        )
+      : [];
     const currentStop = stops.length > 0 ? stops[0] : null;
     const nextStop = stops.length > 1 ? stops[1] : null;
 
@@ -1422,25 +1875,35 @@ exports.getDriverHome = async (req, res, next) => {
           trip_id: activeTrip.id,
           schedule_code: activeTrip.schedule_code,
           status: activeTrip.status,
-          bus_number: activeTrip.vehicle?.registration_number || activeTrip.vehicle?.vehicle_number || 'TBD',
+          bus_number:
+            activeTrip.vehicle?.registration_number ||
+            activeTrip.vehicle?.vehicle_number ||
+            "TBD",
           route_name: activeTrip.route?.route_name,
           departure_time: activeTrip.departure_time,
           trip_date: activeTrip.trip_date,
           can_start_trip: getTripStartEligibility(activeTrip).can_start,
           start_trip_message: getTripStartEligibility(activeTrip).message,
-          scheduled_departure_at: getTripStartEligibility(activeTrip).scheduled_at ? getTripStartEligibility(activeTrip).scheduled_at.toISOString() : null,
+          scheduled_departure_at: getTripStartEligibility(activeTrip)
+            .scheduled_at
+            ? getTripStartEligibility(activeTrip).scheduled_at.toISOString()
+            : null,
         },
-        current_stop: currentStop ? {
-          stop_id: currentStop.id,
-          name: currentStop.stop_name,
-          sequence: currentStop.stop_sequence || 1,
-          eta: currentStop.pickup_time || activeTrip.departure_time,
-        } : null,
-        next_stop: nextStop ? {
-          stop_id: nextStop.id,
-          name: nextStop.stop_name,
-          sequence: nextStop.stop_sequence || 2,
-        } : null,
+        current_stop: currentStop
+          ? {
+              stop_id: currentStop.id,
+              name: currentStop.stop_name,
+              sequence: currentStop.stop_sequence || 1,
+              eta: currentStop.pickup_time || activeTrip.departure_time,
+            }
+          : null,
+        next_stop: nextStop
+          ? {
+              stop_id: nextStop.id,
+              name: nextStop.stop_name,
+              sequence: nextStop.stop_sequence || 2,
+            }
+          : null,
         boarding: {
           total: totalBookings,
           boarded: boardedCount,
@@ -1462,45 +1925,70 @@ exports.getCurrentStop = async (req, res, next) => {
     const trip = await Trip.findOne({
       where: { id: req.params.id, driver_id: req.driver.id },
       include: [
-        { model: Route, as: 'route' },
-        { model: Booking, as: 'bookings', where: { booking_status: 'confirmed', payment_status: 'paid' }, required: false },
+        { model: Route, as: "route" },
+        {
+          model: Booking,
+          as: "bookings",
+          where: { booking_status: "confirmed", payment_status: "paid" },
+          required: false,
+        },
       ],
     });
 
     if (!trip) {
-      return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Trip assignment not found",
+        });
     }
 
-    const stops = trip.route_id ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time) : [];
+    const stops = trip.route_id
+      ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time)
+      : [];
     const bookings = trip.bookings || [];
 
     // Identify current active stop by first stop with pending boardings
     let activeStop = stops[0] || null;
     for (const s of stops) {
-      const stopPending = bookings.filter((b) => Number(b.origin_stop_id) === Number(s.id) && b.boarding_status === 'not_boarded').length;
+      const stopPending = bookings.filter(
+        (b) =>
+          Number(b.origin_stop_id) === Number(s.id) &&
+          b.boarding_status === "not_boarded",
+      ).length;
       if (stopPending > 0) {
         activeStop = s;
         break;
       }
     }
 
-    const stopBookings = activeStop ? bookings.filter((b) => Number(b.origin_stop_id) === Number(activeStop.id)) : [];
-    const stopBoarded = stopBookings.filter((b) => b.boarding_status === 'boarded').length;
+    const stopBookings = activeStop
+      ? bookings.filter(
+          (b) => Number(b.origin_stop_id) === Number(activeStop.id),
+        )
+      : [];
+    const stopBoarded = stopBookings.filter(
+      (b) => b.boarding_status === "boarded",
+    ).length;
 
     res.json({
       status: 200,
       success: true,
       data: {
         trip_id: trip.id,
-        stop: activeStop ? {
-          id: activeStop.id,
-          name: activeStop.stop_name,
-          sequence: activeStop.stop_sequence || 1,
-          latitude: activeStop.latitude,
-          longitude: activeStop.longitude,
-          scheduled_time: activeStop.pickup_time || trip.departure_time,
-          eta: activeStop.pickup_time || trip.departure_time,
-        } : null,
+        stop: activeStop
+          ? {
+              id: activeStop.id,
+              name: activeStop.stop_name,
+              sequence: activeStop.stop_sequence || 1,
+              latitude: activeStop.latitude,
+              longitude: activeStop.longitude,
+              scheduled_time: activeStop.pickup_time || trip.departure_time,
+              eta: activeStop.pickup_time || trip.departure_time,
+            }
+          : null,
         passengers: {
           total: stopBookings.length,
           boarded: stopBoarded,
@@ -1525,27 +2013,42 @@ exports.getTripRouteMap = async (req, res, next) => {
       include: [
         {
           model: Route,
-          as: 'route',
+          as: "route",
         },
-        { model: Vehicle, as: 'vehicle', attributes: ['id', 'registration_number', 'company_model'] },
-        { model: Driver, as: 'driver', attributes: ['id', 'name', 'mobile'] },
-        { model: TripStopArrival, as: 'stop_arrivals' },
+        {
+          model: Vehicle,
+          as: "vehicle",
+          attributes: ["id", "registration_number", "company_model"],
+        },
+        { model: Driver, as: "driver", attributes: ["id", "name", "mobile"] },
+        { model: TripStopArrival, as: "stop_arrivals" },
       ],
     });
 
     if (!trip) {
-      return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found for this driver' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Trip assignment not found for this driver",
+        });
     }
 
     const bookings = await Booking.findAll({
       where: {
         trip_id: tripId,
         [Op.or]: [
-          { booking_status: 'confirmed', payment_status: 'paid' },
-          { booking_status: 'cancelled' },
+          { booking_status: "confirmed", payment_status: "paid" },
+          { booking_status: "cancelled" },
         ],
       },
-      attributes: ['id', 'origin_stop_id', 'destination_stop_id', 'boarding_status'],
+      attributes: [
+        "id",
+        "origin_stop_id",
+        "destination_stop_id",
+        "boarding_status",
+      ],
     });
 
     const arrivalsMap = new Map();
@@ -1553,17 +2056,27 @@ exports.getTripRouteMap = async (req, res, next) => {
       arrivalsMap.set(Number(arr.stop_id), arr);
     });
 
-    const rawStops = trip.route_id ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time) : [];
+    const rawStops = trip.route_id
+      ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time)
+      : [];
 
     let reachedCount = 0;
     const stops = rawStops.map((stop) => {
       const arr = arrivalsMap.get(Number(stop.id)) || null;
-      const isReached = Boolean(arr && (arr.status === 'ARRIVED' || arr.status === 'COMPLETED'));
+      const isReached = Boolean(
+        arr && (arr.status === "ARRIVED" || arr.status === "COMPLETED"),
+      );
       if (isReached) reachedCount++;
 
-      const stopBookings = bookings.filter((b) => Number(b.origin_stop_id) === Number(stop.id));
-      const boarded = stopBookings.filter((b) => b.boarding_status === 'boarded').length;
-      const noShow = stopBookings.filter((b) => b.boarding_status === 'no_show').length;
+      const stopBookings = bookings.filter(
+        (b) => Number(b.origin_stop_id) === Number(stop.id),
+      );
+      const boarded = stopBookings.filter(
+        (b) => b.boarding_status === "boarded",
+      ).length;
+      const noShow = stopBookings.filter(
+        (b) => b.boarding_status === "no_show",
+      ).length;
       const pending = stopBookings.length - boarded - noShow;
 
       return {
@@ -1576,11 +2089,13 @@ exports.getTripRouteMap = async (req, res, next) => {
         longitude: stop.longitude != null ? Number(stop.longitude) : null,
         scheduled_time: stop.pickup_time || trip.departure_time,
         is_reached: isReached,
-        status: arr?.status || 'PENDING',
+        status: arr?.status || "PENDING",
         arrived_at: arr?.arrived_at || null,
         completed_at: arr?.completed_at || null,
-        arrival_latitude: arr?.arrival_latitude != null ? Number(arr.arrival_latitude) : null,
-        arrival_longitude: arr?.arrival_longitude != null ? Number(arr.arrival_longitude) : null,
+        arrival_latitude:
+          arr?.arrival_latitude != null ? Number(arr.arrival_latitude) : null,
+        arrival_longitude:
+          arr?.arrival_longitude != null ? Number(arr.arrival_longitude) : null,
         passengers: {
           total: stopBookings.length,
           boarded,
@@ -1590,11 +2105,21 @@ exports.getTripRouteMap = async (req, res, next) => {
       };
     });
 
-    const currentStop = stops.find((s) => s.status === 'ARRIVED') || stops.find((s) => s.status === 'PENDING') || stops[stops.length - 1] || null;
+    const currentStop =
+      stops.find((s) => s.status === "ARRIVED") ||
+      stops.find((s) => s.status === "PENDING") ||
+      stops[stops.length - 1] ||
+      null;
 
     const detail = await DriverDetail.findOne({
       where: { driver_id: req.driver.id },
-      attributes: ['latitude', 'longitude', 'location_speed_kmh', 'location_heading', 'updated_at'],
+      attributes: [
+        "latitude",
+        "longitude",
+        "location_speed_kmh",
+        "location_heading",
+        "updated_at",
+      ],
     });
 
     res.json({
@@ -1621,18 +2146,31 @@ exports.getTripRouteMap = async (req, res, next) => {
         },
         driver: trip.driver,
         vehicle: trip.vehicle,
-        driver_location: detail ? {
-          latitude: detail.latitude != null ? Number(detail.latitude) : null,
-          longitude: detail.longitude != null ? Number(detail.longitude) : null,
-          speed_kmh: detail.location_speed_kmh != null ? Number(detail.location_speed_kmh) : null,
-          heading: detail.location_heading != null ? Number(detail.location_heading) : null,
-          updated_at: detail.updated_at,
-        } : null,
+        driver_location: detail
+          ? {
+              latitude:
+                detail.latitude != null ? Number(detail.latitude) : null,
+              longitude:
+                detail.longitude != null ? Number(detail.longitude) : null,
+              speed_kmh:
+                detail.location_speed_kmh != null
+                  ? Number(detail.location_speed_kmh)
+                  : null,
+              heading:
+                detail.location_heading != null
+                  ? Number(detail.location_heading)
+                  : null,
+              updated_at: detail.updated_at,
+            }
+          : null,
         progress: {
           total_stops: stops.length,
           reached_stops: reachedCount,
           pending_stops: stops.length - reachedCount,
-          percent_complete: stops.length > 0 ? Math.round((reachedCount / stops.length) * 100) : 0,
+          percent_complete:
+            stops.length > 0
+              ? Math.round((reachedCount / stops.length) * 100)
+              : 0,
         },
         current_stop: currentStop,
         stops,
@@ -1651,41 +2189,63 @@ exports.getTripRouteMap = async (req, res, next) => {
 exports.arriveAtStop = async (req, res, next) => {
   try {
     const { id: tripId, stopId } = req.params;
-    const { latitude, longitude, speed, heading, accuracy, notes } = req.body || {};
+    const { latitude, longitude, speed, heading, accuracy, notes } =
+      req.body || {};
 
     const trip = await Trip.findOne({
       where: { id: tripId, driver_id: req.driver.id },
-      include: [{ model: Route, as: 'route', include: [{ model: Stop, as: 'stops' }] }],
+      include: [
+        { model: Route, as: "route", include: [{ model: Stop, as: "stops" }] },
+      ],
     });
     if (!trip) {
-      return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Trip assignment not found",
+        });
     }
 
     const stop = await Stop.findByPk(stopId);
     if (!stop) {
-      return res.status(404).json({ status: 404, success: false, message: 'Stop not found' });
+      return res
+        .status(404)
+        .json({ status: 404, success: false, message: "Stop not found" });
     }
 
     const now = new Date();
-    const parsedLat = latitude != null && latitude !== '' ? Number(latitude) : null;
-    const parsedLng = longitude != null && longitude !== '' ? Number(longitude) : null;
-    const validCoords = parsedLat != null && parsedLng != null && Number.isFinite(parsedLat) && Number.isFinite(parsedLng)
-      && Math.abs(parsedLat) <= 90 && Math.abs(parsedLng) <= 180;
+    const parsedLat =
+      latitude != null && latitude !== "" ? Number(latitude) : null;
+    const parsedLng =
+      longitude != null && longitude !== "" ? Number(longitude) : null;
+    const validCoords =
+      parsedLat != null &&
+      parsedLng != null &&
+      Number.isFinite(parsedLat) &&
+      Number.isFinite(parsedLng) &&
+      Math.abs(parsedLat) <= 90 &&
+      Math.abs(parsedLng) <= 180;
 
     const bookings = await Booking.findAll({
       where: {
         trip_id: tripId,
         origin_stop_id: stopId,
         [Op.or]: [
-          { booking_status: 'confirmed', payment_status: 'paid' },
-          { booking_status: 'cancelled' },
+          { booking_status: "confirmed", payment_status: "paid" },
+          { booking_status: "cancelled" },
         ],
       },
     });
 
     const total = bookings.length;
-    const boarded = bookings.filter((b) => b.boarding_status === 'boarded').length;
-    const noShow = bookings.filter((b) => b.boarding_status === 'no_show').length;
+    const boarded = bookings.filter(
+      (b) => b.boarding_status === "boarded",
+    ).length;
+    const noShow = bookings.filter(
+      (b) => b.boarding_status === "no_show",
+    ).length;
     const pending = total - boarded - noShow;
 
     // Find or create in TripStopArrival table
@@ -1696,9 +2256,13 @@ exports.arriveAtStop = async (req, res, next) => {
     if (arrivalRecord) {
       await arrivalRecord.update({
         arrived_at: now,
-        status: 'ARRIVED',
-        arrival_latitude: validCoords ? parsedLat : arrivalRecord.arrival_latitude,
-        arrival_longitude: validCoords ? parsedLng : arrivalRecord.arrival_longitude,
+        status: "ARRIVED",
+        arrival_latitude: validCoords
+          ? parsedLat
+          : arrivalRecord.arrival_latitude,
+        arrival_longitude: validCoords
+          ? parsedLng
+          : arrivalRecord.arrival_longitude,
         passengers_boarded: boarded,
         passengers_pending: pending,
         passengers_no_show: noShow,
@@ -1708,7 +2272,11 @@ exports.arriveAtStop = async (req, res, next) => {
       const routeStop = await RouteStop.findOne({
         where: { route_id: trip.route_id, stop_id: stop.id },
       });
-      const resolvedSequence = routeStop ? Number(routeStop.stop_sequence) : (Number(stop.stop_sequence) > 0 ? Number(stop.stop_sequence) : 1);
+      const resolvedSequence = routeStop
+        ? Number(routeStop.stop_sequence)
+        : Number(stop.stop_sequence) > 0
+          ? Number(stop.stop_sequence)
+          : 1;
       arrivalRecord = await TripStopArrival.create({
         trip_id: trip.id,
         stop_id: stop.id,
@@ -1718,7 +2286,7 @@ exports.arriveAtStop = async (req, res, next) => {
         stop_name: stop.stop_name,
         scheduled_arrival_time: stop.pickup_time || trip.departure_time || null,
         arrived_at: now,
-        status: 'ARRIVED',
+        status: "ARRIVED",
         arrival_latitude: validCoords ? parsedLat : null,
         arrival_longitude: validCoords ? parsedLng : null,
         passengers_boarded: boarded,
@@ -1737,14 +2305,23 @@ exports.arriveAtStop = async (req, res, next) => {
           vehicle_id: trip.vehicle_id || null,
           latitude: parsedLat,
           longitude: parsedLng,
-          speed_kmh: speed != null && Number.isFinite(Number(speed)) ? Number(speed) : 0,
-          heading: heading != null && Number.isFinite(Number(heading)) ? Number(heading) : null,
-          accuracy: accuracy != null && Number.isFinite(Number(accuracy)) ? Number(accuracy) : null,
+          speed_kmh:
+            speed != null && Number.isFinite(Number(speed)) ? Number(speed) : 0,
+          heading:
+            heading != null && Number.isFinite(Number(heading))
+              ? Number(heading)
+              : null,
+          accuracy:
+            accuracy != null && Number.isFinite(Number(accuracy))
+              ? Number(accuracy)
+              : null,
           recorded_at: now,
         });
 
         // Update DriverDetail live location
-        const detail = await DriverDetail.findOne({ where: { driver_id: req.driver.id } });
+        const detail = await DriverDetail.findOne({
+          where: { driver_id: req.driver.id },
+        });
         if (detail) {
           await detail.update({
             latitude: parsedLat,
@@ -1753,14 +2330,24 @@ exports.arriveAtStop = async (req, res, next) => {
           });
         }
       } catch (locErr) {
-        console.warn('TripLocation arrival ping recording error:', locErr.message);
+        console.warn(
+          "TripLocation arrival ping recording error:",
+          locErr.message,
+        );
       }
     }
 
     // Determine next stop
-    const stops = (trip.route?.stops || []).slice().sort((a, b) => (a.stop_sequence || 0) - (b.stop_sequence || 0));
-    const currentIndex = stops.findIndex((s) => Number(s.id) === Number(stopId));
-    const nextStop = currentIndex >= 0 && currentIndex + 1 < stops.length ? stops[currentIndex + 1] : null;
+    const stops = (trip.route?.stops || [])
+      .slice()
+      .sort((a, b) => (a.stop_sequence || 0) - (b.stop_sequence || 0));
+    const currentIndex = stops.findIndex(
+      (s) => Number(s.id) === Number(stopId),
+    );
+    const nextStop =
+      currentIndex >= 0 && currentIndex + 1 < stops.length
+        ? stops[currentIndex + 1]
+        : null;
 
     res.json({
       status: 200,
@@ -1782,11 +2369,13 @@ exports.arriveAtStop = async (req, res, next) => {
           no_show: noShow,
         },
         stoppage_arrival_id: arrivalRecord.id,
-        next_stop: nextStop ? {
-          stop_id: nextStop.id,
-          name: nextStop.stop_name,
-          sequence: nextStop.stop_sequence,
-        } : null,
+        next_stop: nextStop
+          ? {
+              stop_id: nextStop.id,
+              name: nextStop.stop_name,
+              sequence: nextStop.stop_sequence,
+            }
+          : null,
       },
     });
   } catch (err) {
@@ -1802,9 +2391,17 @@ exports.getStopPassengers = async (req, res, next) => {
   try {
     const { id: tripId, stopId } = req.params;
 
-    const trip = await Trip.findOne({ where: { id: tripId, driver_id: req.driver.id } });
+    const trip = await Trip.findOne({
+      where: { id: tripId, driver_id: req.driver.id },
+    });
     if (!trip) {
-      return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Trip assignment not found",
+        });
     }
 
     const stop = await Stop.findByPk(stopId);
@@ -1813,11 +2410,16 @@ exports.getStopPassengers = async (req, res, next) => {
         trip_id: tripId,
         origin_stop_id: stopId,
         [Op.or]: [
-          { booking_status: 'confirmed', payment_status: 'paid' },
-          { booking_status: 'cancelled', payment_status: { [Op.in]: ['paid', 'refunded', 'partial_refund', 'pending'] } },
+          { booking_status: "confirmed", payment_status: "paid" },
+          {
+            booking_status: "cancelled",
+            payment_status: {
+              [Op.in]: ["paid", "refunded", "partial_refund", "pending"],
+            },
+          },
         ],
       },
-      order: [['id', 'ASC']],
+      order: [["id", "ASC"]],
     });
 
     const passengers = bookings.map((b) => ({
@@ -1825,8 +2427,11 @@ exports.getStopPassengers = async (req, res, next) => {
       booking_reference: b.booking_reference,
       passenger_name: b.passenger_name,
       passenger_mobile_masked: maskMobile(b.passenger_mobile),
-      seat: Array.isArray(b.seat_numbers) ? b.seat_numbers.join(', ') : b.seat_numbers,
-      boarding_status: b.booking_status === 'cancelled' ? 'cancelled' : b.boarding_status,
+      seat: Array.isArray(b.seat_numbers)
+        ? b.seat_numbers.join(", ")
+        : b.seat_numbers,
+      boarding_status:
+        b.booking_status === "cancelled" ? "cancelled" : b.boarding_status,
       booking_status: b.booking_status,
       cancellation_reason: b.cancellation_reason || null,
       cancelled_at: b.cancelled_at || null,
@@ -1835,7 +2440,9 @@ exports.getStopPassengers = async (req, res, next) => {
     }));
 
     const total = bookings.length;
-    const boarded = bookings.filter((b) => b.boarding_status === 'boarded').length;
+    const boarded = bookings.filter(
+      (b) => b.boarding_status === "boarded",
+    ).length;
 
     res.json({
       status: 200,
@@ -1843,13 +2450,14 @@ exports.getStopPassengers = async (req, res, next) => {
       data: {
         stop: {
           id: Number(stopId),
-          name: stop ? stop.stop_name : 'Pickup Stop',
+          name: stop ? stop.stop_name : "Pickup Stop",
         },
         summary: {
           total,
           boarded,
           pending: total - boarded,
-          no_show: bookings.filter((b) => b.boarding_status === 'no_show').length,
+          no_show: bookings.filter((b) => b.boarding_status === "no_show")
+            .length,
         },
         passengers,
       },
@@ -1870,16 +2478,30 @@ exports.completeStop = async (req, res, next) => {
 
     const trip = await Trip.findOne({
       where: { id: tripId, driver_id: req.driver.id },
-      include: [{ model: Route, as: 'route', include: [{ model: Stop, as: 'stops' }] }],
+      include: [
+        { model: Route, as: "route", include: [{ model: Stop, as: "stops" }] },
+      ],
     });
     if (!trip) {
-      return res.status(404).json({ status: 404, success: false, message: 'Trip assignment not found' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Trip assignment not found",
+        });
     }
 
-    const bookings = await Booking.findAll({ where: { trip_id: tripId, origin_stop_id: stopId } });
+    const bookings = await Booking.findAll({
+      where: { trip_id: tripId, origin_stop_id: stopId },
+    });
     const total = bookings.length;
-    const boarded = bookings.filter((b) => b.boarding_status === 'boarded').length;
-    const noShow = bookings.filter((b) => b.boarding_status === 'no_show').length;
+    const boarded = bookings.filter(
+      (b) => b.boarding_status === "boarded",
+    ).length;
+    const noShow = bookings.filter(
+      (b) => b.boarding_status === "no_show",
+    ).length;
     const pending = total - boarded - noShow;
     const now = new Date();
 
@@ -1891,7 +2513,7 @@ exports.completeStop = async (req, res, next) => {
     if (arrivalRecord) {
       await arrivalRecord.update({
         completed_at: now,
-        status: 'COMPLETED',
+        status: "COMPLETED",
         passengers_boarded: boarded,
         passengers_pending: pending,
         passengers_no_show: noShow,
@@ -1902,18 +2524,23 @@ exports.completeStop = async (req, res, next) => {
       const routeStop = await RouteStop.findOne({
         where: { route_id: trip.route_id, stop_id: Number(stopId) },
       });
-      const resolvedSequence = routeStop ? Number(routeStop.stop_sequence) : (Number(stop?.stop_sequence) > 0 ? Number(stop?.stop_sequence) : 1);
+      const resolvedSequence = routeStop
+        ? Number(routeStop.stop_sequence)
+        : Number(stop?.stop_sequence) > 0
+          ? Number(stop?.stop_sequence)
+          : 1;
       arrivalRecord = await TripStopArrival.create({
         trip_id: trip.id,
         stop_id: Number(stopId),
         driver_id: req.driver.id,
         vehicle_id: trip.vehicle_id || null,
         stop_sequence: resolvedSequence,
-        stop_name: stop?.stop_name || 'Stop',
-        scheduled_arrival_time: stop?.pickup_time || trip.departure_time || null,
+        stop_name: stop?.stop_name || "Stop",
+        scheduled_arrival_time:
+          stop?.pickup_time || trip.departure_time || null,
         arrived_at: now,
         completed_at: now,
-        status: 'COMPLETED',
+        status: "COMPLETED",
         passengers_boarded: boarded,
         passengers_pending: pending,
         passengers_no_show: noShow,
@@ -1921,14 +2548,22 @@ exports.completeStop = async (req, res, next) => {
       });
     }
 
-    const stops = trip.route_id ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time) : [];
-    const currentIndex = stops.findIndex((s) => Number(s.id) === Number(stopId));
-    const nextStop = currentIndex >= 0 && currentIndex + 1 < stops.length ? stops[currentIndex + 1] : null;
+    const stops = trip.route_id
+      ? await getOrderedStopsForRoute(trip.route_id, trip.departure_time)
+      : [];
+    const currentIndex = stops.findIndex(
+      (s) => Number(s.id) === Number(stopId),
+    );
+    const nextStop =
+      currentIndex >= 0 && currentIndex + 1 < stops.length
+        ? stops[currentIndex + 1]
+        : null;
 
     res.json({
       status: 200,
       success: true,
-      message: 'Stop completed successfully. Stoppage departure recorded in database.',
+      message:
+        "Stop completed successfully. Stoppage departure recorded in database.",
       data: {
         stop_id: Number(stopId),
         total_passengers: total,
@@ -1937,12 +2572,14 @@ exports.completeStop = async (req, res, next) => {
         pending,
         arrived_at: arrivalRecord.arrived_at,
         completed_at: now,
-        status: 'COMPLETED',
-        next_stop: nextStop ? {
-          stop_id: nextStop.id,
-          name: nextStop.stop_name,
-          sequence: nextStop.stop_sequence,
-        } : null,
+        status: "COMPLETED",
+        next_stop: nextStop
+          ? {
+              stop_id: nextStop.id,
+              name: nextStop.stop_name,
+              sequence: nextStop.stop_sequence,
+            }
+          : null,
       },
     });
   } catch (err) {
@@ -1958,27 +2595,47 @@ exports.markNoShow = async (req, res, next) => {
   try {
     const { booking_id, reason } = req.body || {};
     if (!booking_id) {
-      return res.status(400).json({ status: 400, success: false, message: 'booking_id is required' });
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "booking_id is required",
+        });
     }
 
-    const booking = await Booking.findOne({ where: { id: booking_id, trip_id: req.params.id } });
+    const booking = await Booking.findOne({
+      where: { id: booking_id, trip_id: req.params.id },
+    });
     if (!booking) {
-      return res.status(404).json({ status: 404, success: false, message: 'Booking not found for this trip' });
+      return res
+        .status(404)
+        .json({
+          status: 404,
+          success: false,
+          message: "Booking not found for this trip",
+        });
     }
 
-    if (booking.boarding_status === 'boarded') {
-      return res.status(400).json({ status: 400, success: false, message: 'Passenger has already boarded' });
+    if (booking.boarding_status === "boarded") {
+      return res
+        .status(400)
+        .json({
+          status: 400,
+          success: false,
+          message: "Passenger has already boarded",
+        });
     }
 
     await booking.update({
-      boarding_status: 'no_show',
-      cancellation_reason: reason || 'Passenger did not arrive at stop',
+      boarding_status: "no_show",
+      cancellation_reason: reason || "Passenger did not arrive at stop",
     });
 
     res.json({
       status: 200,
       success: true,
-      message: 'Passenger marked as no-show',
+      message: "Passenger marked as no-show",
       data: {
         booking_id: booking.id,
         booking_reference: booking.booking_reference,
