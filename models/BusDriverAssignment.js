@@ -9,7 +9,7 @@ const BusDriverAssignment = sequelize.define('BusDriverAssignment', {
   driver_id: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false },
   assignment_date: { type: DataTypes.DATEONLY, allowNull: false },
   reporting_time: { type: DataTypes.TIME, allowNull: false },
-  status: { type: DataTypes.ENUM('assigned', 'started', 'completed', 'cancelled'), defaultValue: 'assigned' },
+  status: { type: DataTypes.ENUM('assigned', 'accepted', 'started', 'completed', 'cancelled'), defaultValue: 'assigned' },
   start_odometer: { type: DataTypes.DECIMAL(10, 2), defaultValue: null },
   end_odometer: { type: DataTypes.DECIMAL(10, 2), defaultValue: null },
   notes: { type: DataTypes.TEXT, defaultValue: null },

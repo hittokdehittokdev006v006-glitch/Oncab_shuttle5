@@ -30,6 +30,8 @@ const getTomorrowStr = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+const todayStr = getTodayStr();
+
 export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify }) => {
   const { user, hasPermission } = useAuth();
   const isOwner = hasRole(user, 'owner');
@@ -71,7 +73,7 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
     vehicle_id: '',
     bus_type_id: '',
     trip_date: '',
-    valid_from: new Date().toISOString().split('T')[0],
+    valid_from: todayStr,
     valid_until: '',
     departure_time: '',
     seat_capacity: '',
@@ -82,7 +84,7 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
   // Future Trip Generator State
   const [genForm, setGenForm] = useState({
     days_ahead: 14,
-    start_date: new Date().toISOString().split('T')[0],
+    start_date: todayStr,
     end_date: '',
   });
   const [generatingFuture, setGeneratingFuture] = useState(false);
@@ -188,6 +190,12 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
       return;
     }
 
+    const requestedStartDate = singleForm.valid_from || singleForm.trip_date || todayStr;
+    if (requestedStartDate < todayStr) {
+      onNotify('You cannot create a trip for a previous date. Please select today or a future date.', 'error');
+      return;
+    }
+
     setCreatingSingle(true);
     try {
       const scheduleCode = `SCH-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -201,7 +209,7 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
           : (vehicles.find((vehicle) => String(vehicle.id) === singleForm.vehicle_id)?.bus_type_id
             || vehicles.find((vehicle) => String(vehicle.id) === singleForm.vehicle_id)?.bus_type?.id
             || null),
-        trip_date: singleForm.trip_date || singleForm.valid_from || new Date().toISOString().split('T')[0],
+        trip_date: singleForm.trip_date || singleForm.valid_from || todayStr,
         valid_from: singleForm.valid_from || null,
         valid_until: singleForm.valid_until || null,
         operating_days: singleForm.operating_days.join(','),
@@ -218,7 +226,7 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
         vehicle_id: '',
         bus_type_id: '',
         trip_date: '',
-        valid_from: new Date().toISOString().split('T')[0],
+        valid_from: todayStr,
         valid_until: '',
         departure_time: '',
         seat_capacity: '',
@@ -322,7 +330,7 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
     try {
       const payload: any = {
         days_ahead: daysAheadNum || genForm.days_ahead || 14,
-        start_date: genForm.start_date || new Date().toISOString().split('T')[0],
+        start_date: genForm.start_date || todayStr,
       };
       if (genForm.end_date) payload.end_date = genForm.end_date;
 
@@ -404,7 +412,7 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
               driver_id: item.driver_id ? parseInt(item.driver_id) : null,
               vehicle_id: item.vehicle_id ? parseInt(item.vehicle_id) : null,
               operating_days: item.operating_days || '1,2,3,4,5',
-              valid_from: item.valid_from || new Date().toISOString().split('T')[0],
+              valid_from: item.valid_from || todayStr,
               valid_until: item.valid_until || null,
               departure_time: item.departure_time || '08:00',
               seat_capacity: item.seat_capacity ? parseInt(item.seat_capacity) : 40,
@@ -732,8 +740,16 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
               </label>
               <input
                 type="date"
+                min={todayStr}
                 value={singleForm.valid_from}
-                onChange={(e) => setSingleForm({ ...singleForm, valid_from: e.target.value })}
+                onChange={(e) => {
+                  const nextValue = e.target.value;
+                  if (nextValue && nextValue < todayStr) {
+                    onNotify('You cannot create a trip for a previous date. Please select today or a future date.', 'error');
+                    return;
+                  }
+                  setSingleForm({ ...singleForm, valid_from: nextValue });
+                }}
                 className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500 font-medium"
               />
             </div>
@@ -744,9 +760,17 @@ export const ScheduledTripsPage: React.FC<ScheduledTripsPageProps> = ({ onNotify
               </label>
               <input
                 type="date"
+                min={todayStr}
                 value={singleForm.valid_until}
                 placeholder="Optional end date"
-                onChange={(e) => setSingleForm({ ...singleForm, valid_until: e.target.value })}
+                onChange={(e) => {
+                  const nextValue = e.target.value;
+                  if (nextValue && nextValue < todayStr) {
+                    onNotify('You cannot create a trip for a previous date. Please select today or a future date.', 'error');
+                    return;
+                  }
+                  setSingleForm({ ...singleForm, valid_until: nextValue });
+                }}
                 className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500 font-medium"
               />
             </div>

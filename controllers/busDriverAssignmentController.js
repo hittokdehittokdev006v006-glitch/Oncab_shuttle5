@@ -55,6 +55,53 @@ const parseAssignmentDate = (value) => {
   return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value ? null : date;
 };
 
+const normalizeAssignmentStatus = (value) => {
+  const status = String(value ?? 'assigned').trim().toLowerCase();
+  if (['assigned', 'accepted', 'started', 'completed', 'cancelled'].includes(status)) return status;
+  return 'assigned';
+};
+
+const formatAssignmentStatus = (value) => {
+  const status = normalizeAssignmentStatus(value);
+  const labels = {
+    assigned: 'Assigned',
+    accepted: 'Accepted',
+    started: 'Started',
+    completed: 'Completed',
+    cancelled: 'Cancelled',
+  };
+  return labels[status] || 'Assigned';
+};
+
+const getScheduleDepartureTimestamp = (schedule, fallbackDate = null) => {
+  if (!schedule) return null;
+
+  const tripDate = formatDateStr(schedule.trip_date || schedule.assignment_date || fallbackDate);
+  const departureTime = schedule.departure_time || schedule.reporting_time;
+  if (!tripDate || !departureTime) return null;
+
+  const dateText = String(tripDate).slice(0, 10);
+  const timeText = String(departureTime).slice(0, 8);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText) || !/^\d{2}:\d{2}(:\d{2})?$/.test(timeText)) {
+    return null;
+  }
+
+  const timestamp = new Date(`${dateText}T${timeText}`);
+  return Number.isNaN(timestamp.getTime()) ? null : timestamp;
+};
+
+const getAssignmentStartState = (schedule, assignmentDate) => {
+  const scheduledAt = getScheduleDepartureTimestamp(schedule, assignmentDate);
+  const now = new Date();
+  const canStart = Boolean(scheduledAt) && now >= scheduledAt;
+
+  return {
+    scheduled_at: scheduledAt,
+    can_start: canStart,
+    message: canStart ? null : 'Trip can only be started at the scheduled departure time.',
+  };
+};
+
 const getEligibleDriver = async (driverId) => {
   const driver = await Driver.findByPk(driverId);
   if (!driver) return { error: [404, 'Driver not found'] };
@@ -484,7 +531,7 @@ exports.acceptAssignment = async (req, res, next) => {
         ? await existing.update({
           driver_id: req.driver.id,
           reporting_time: schedule.departure_time,
-          status: 'assigned',
+          status: 'accepted',
           start_odometer: null,
           end_odometer: null,
           notes: null,
@@ -494,12 +541,15 @@ exports.acceptAssignment = async (req, res, next) => {
           driver_id: req.driver.id,
           assignment_date: assignmentDate,
           reporting_time: schedule.departure_time,
-          status: 'assigned',
+          status: 'accepted',
         }, { transaction });
 
       await transaction.commit();
       await assignment.reload({ include: assignmentIncludes });
-      res.status(201).json({ status: 201, success: true, message: 'Assignment accepted successfully', data: assignment });
+      const serialised = assignment.toJSON();
+      serialised.assignment_status = formatAssignmentStatus(serialised.status);
+      serialised.status = normalizeAssignmentStatus(serialised.status);
+      res.status(201).json({ status: 201, success: true, message: 'Assignment accepted successfully', data: serialised });
     } catch (err) {
       await transaction.rollback();
       if (err instanceof UniqueConstraintError) {
@@ -515,7 +565,7 @@ exports.acceptAssignment = async (req, res, next) => {
 exports.getMyAssignments = async (req, res, next) => {
   try {
     const where = { driver_id: req.driver.id };
-    if (req.query.status) where.status = req.query.status;
+    if (req.query.status) where.status = normalizeAssignmentStatus(req.query.status);
     if (req.query.upcoming === 'true') where.assignment_date = { [Op.gte]: todayDate() };
 
     const assignments = await BusDriverAssignment.findAll({
@@ -528,6 +578,12 @@ exports.getMyAssignments = async (req, res, next) => {
       item.distance_km = item.start_odometer !== null && item.end_odometer !== null
         ? Number((Number(item.end_odometer) - Number(item.start_odometer)).toFixed(2))
         : null;
+      item.status = normalizeAssignmentStatus(item.status);
+      item.assignment_status = formatAssignmentStatus(item.status);
+      const departureState = getAssignmentStartState(item.schedule || { trip_date: item.assignment_date, departure_time: item.reporting_time }, item.assignment_date);
+      item.scheduled_departure_at = departureState.scheduled_at ? departureState.scheduled_at.toISOString() : null;
+      item.can_start_trip = departureState.can_start;
+      item.start_trip_message = departureState.message;
       if (item.schedule) {
         item.schedule = await attachScheduleStops(item.schedule);
       }
@@ -552,10 +608,31 @@ exports.startAssignment = async (req, res, next) => {
     }
     const assignment = await BusDriverAssignment.findOne({ where: { id: assignmentId, driver_id: req.driver.id } });
     if (!assignment) return res.status(404).json({ status: 404, success: false, message: 'Assignment not found' });
-    if (assignment.status !== 'assigned') return res.status(409).json({ status: 409, success: false, message: 'Only assigned trips can be started' });
 
+    const currentStatus = normalizeAssignmentStatus(assignment.status);
+    if (['started', 'completed', 'cancelled'].includes(currentStatus)) {
+      return res.status(409).json({ status: 409, success: false, message: `Assignment is already ${formatAssignmentStatus(currentStatus).toLowerCase()}` });
+    }
+
+    const schedule = await BusSchedule.findByPk(assignment.schedule_id);
+    if (!schedule) return res.status(404).json({ status: 404, success: false, message: 'Trip schedule not found for this assignment' });
+
+    const scheduleState = getAssignmentStartState(schedule, assignment.assignment_date);
+    if (!scheduleState.can_start) {
+      return res.status(400).json({ status: 400, success: false, message: scheduleState.message, data: { scheduled_departure_at: scheduleState.scheduled_at ? scheduleState.scheduled_at.toISOString() : null } });
+    }
+
+    const startedAt = new Date();
+    await schedule.update({ status: 'Active', started_at: startedAt });
     await assignment.update({ status: 'started', start_odometer: startOdometer });
-    res.json({ status: 200, success: true, message: 'Assignment started successfully', data: assignment });
+
+    const updatedAssignment = assignment.toJSON();
+    updatedAssignment.status = normalizeAssignmentStatus(updatedAssignment.status);
+    updatedAssignment.assignment_status = formatAssignmentStatus(updatedAssignment.status);
+    updatedAssignment.scheduled_departure_at = scheduleState.scheduled_at ? scheduleState.scheduled_at.toISOString() : null;
+    updatedAssignment.can_start_trip = true;
+
+    res.json({ status: 200, success: true, message: 'Assignment started successfully', data: updatedAssignment });
   } catch (err) {
     next(err);
   }

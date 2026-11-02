@@ -160,7 +160,7 @@ export interface BusDriverAssignment {
   driver_id: number;
   assignment_date: string;
   reporting_time: string;
-  status: 'assigned' | 'started' | 'completed' | 'cancelled';
+  status: 'assigned' | 'accepted' | 'started' | 'completed' | 'cancelled';
   start_odometer: number | null;
   end_odometer: number | null;
   notes: string | null;
