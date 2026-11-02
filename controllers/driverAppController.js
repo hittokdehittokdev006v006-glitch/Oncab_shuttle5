@@ -79,8 +79,33 @@ const getTripDepartureTimestamp = (trip) => {
   return Number.isNaN(scheduledAt.getTime()) ? null : scheduledAt;
 };
 
+const hasRequiredTripAssignment = (trip) => {
+  const driverId = trip?.driver_id ?? trip?.driverId;
+  const routeId = trip?.route_id ?? trip?.routeId;
+  const vehicleId = trip?.vehicle_id ?? trip?.vehicleId;
+
+  return (
+    driverId != null &&
+    driverId !== "" &&
+    routeId != null &&
+    routeId !== "" &&
+    vehicleId != null &&
+    vehicleId !== ""
+  );
+};
+
 const getTripStartEligibility = (trip) => {
   const scheduledAt = getTripDepartureTimestamp(trip);
+
+  if (!hasRequiredTripAssignment(trip)) {
+    return {
+      scheduled_at: scheduledAt,
+      can_start: false,
+      message:
+        "Trip cannot be started because driver, route, or vehicle is not assigned.",
+    };
+  }
+
   const now = new Date();
   const canStart = Boolean(scheduledAt) && now >= scheduledAt;
 

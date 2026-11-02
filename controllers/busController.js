@@ -42,7 +42,14 @@ const refundApprovalRequired = async () => {
   const { SystemSetting } = require('../models');
   const setting = await SystemSetting.findOne({ where: { key: 'refund_admin_approval_required' } });
   if (!setting) return true;
-  return String(setting.value).trim().toLowerCase() === 'true';
+  const value = String(setting.value ?? '').trim().toLowerCase();
+  return !['false', '0', 'no', 'off'].includes(value);
+};
+const getCancellationCutoffMinutes = async () => {
+  const { SystemSetting } = require('../models');
+  const setting = await SystemSetting.findOne({ where: { key: 'cancellation_cutoff_minutes' } });
+  const minutes = Number(setting?.value);
+  return Number.isFinite(minutes) && minutes >= 0 ? minutes : 30;
 };
 const { confirmPaidBooking } = require('../services/bookingConfirmationService');
 const {
@@ -1843,8 +1850,9 @@ exports.cancelUserBooking = async (req, res, next) => {
         transaction: t,
       });
       const refundRef = `REF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      const approvalRequired = await refundApprovalRequired();
 
-      if (isWalletRefund && passenger) {
+      if (isWalletRefund && passenger && !approvalRequired) {
         const currentBalance = Number(passenger.wallet_balance || 0);
         walletBalanceAfter = Math.round((currentBalance + refundAmount) * 100) / 100;
         await passenger.update({ wallet_balance: walletBalanceAfter }, { transaction: t });
@@ -1876,6 +1884,18 @@ exports.cancelUserBooking = async (req, res, next) => {
         walletCredited = true;
         await booking.update({ payment_status: 'refunded' }, { transaction: t });
         if (payment) await payment.update({ status: 'refunded' }, { transaction: t });
+      } else if (isWalletRefund && passenger) {
+        refundRecord = await Refund.create({
+          booking_id: booking.id,
+          payment_id: payment?.id || null,
+          passenger_id: passenger.id,
+          refund_reference: refundRef,
+          refund_amount: refundAmount,
+          refund_reason: cancellation_reason || 'Cancelled by user',
+          refund_method: 'wallet',
+          status: 'pending',
+          notes: 'Awaiting administrator approval before wallet credit.',
+        }, { transaction: t });
       } else {
         refundRecord = await Refund.create({
           booking_id: booking.id,
@@ -2681,135 +2701,50 @@ exports.cancelBooking = async (req, res, next) => {
     );
 
     // --------------------------------------------------
-    // 5. DRIVER ETA CANCELLATION RESTRICTION
-    //
-    // Rules:
-    // - Future trip date: skip ETA restriction.
-    // - Active trip today or in the past: check ETA.
-    // - Scheduled or other statuses: skip ETA restriction.
-    // - Admin: skip ETA restriction.
+    // 5. BLOCK CANCELLATION WITHIN 30 MINUTES OF THE PASSENGER'S PICKUP STOP
+    // Use the selected stop's scheduled/actual arrival, not the driver's
+    // current ETA to the stop. The cutoff therefore follows the stop schedule.
     // --------------------------------------------------
     if (!isAdmin && booking.trip_id) {
       const trip = await Trip.findByPk(booking.trip_id, {
         transaction: t,
       });
 
-      if (trip && trip.status === 'Active') {
-        // MySQL DATE / Sequelize DATEONLY is normally YYYY-MM-DD.
-        const tripDate = trip.trip_date
-          ? String(trip.trip_date).slice(0, 10)
-          : null;
-
-        // Get today's date in India, independent of server timezone.
-        const parts = new Intl.DateTimeFormat('en-CA', {
-          timeZone: 'Asia/Kolkata',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-        }).formatToParts(new Date());
-
-        const dateParts = {};
-
-        for (const part of parts) {
-          if (part.type !== 'literal') {
-            dateParts[part.type] = part.value;
-          }
-        }
-
-        const todayStr =
-          `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
-
-        console.log('[CANCELLATION ETA CHECK]', {
-          trip_id: trip.id,
-          trip_status: trip.status,
-          trip_date: tripDate,
-          today: todayStr,
-        });
-
-        // A future-dated trip should not trigger the ETA restriction.
-        if (tripDate && tripDate <= todayStr) {
-          const originStop = booking.origin_stop_id
-            ? await Stop.findByPk(booking.origin_stop_id, {
-                transaction: t,
-              })
-            : null;
-
-          const driverDetail = trip.driver_id
-            ? await DriverDetail.findOne({
-                where: { driver_id: trip.driver_id },
-                transaction: t,
-              })
-            : null;
-
-          const etaInfo = await getEtaMinutesToPickup({
-            driverDetail: driverDetail || {},
-            originStop: originStop || {},
+      if (trip) {
+        const cutoffMinutes = await getCancellationCutoffMinutes();
+        const tripDate = String(trip.trip_date || booking.travel_date || '').slice(0, 10);
+        const stops = await getOrderedStopsForRoute(trip.route_id, trip.departure_time);
+        const pickup = stops.find((stop) => Number(stop.id) === Number(booking.origin_stop_id));
+        if (tripDate && pickup) {
+          const reachedStop = await TripStopArrival.findOne({
+            where: { trip_id: trip.id, stop_id: booking.origin_stop_id },
+            transaction: t,
           });
-
-          const etaMinutes = Number(etaInfo?.eta_minutes);
-          const distanceMeters = Number(etaInfo?.distance_meters);
-
-          // Missing/invalid ETA must not silently allow cancellation.
-          if (
-            !etaInfo ||
-            !Number.isFinite(etaMinutes) ||
-            etaMinutes < 0
-          ) {
+          let arrivalAt = reachedStop?.arrived_at ? new Date(reachedStop.arrived_at) : null;
+          if (!arrivalAt || Number.isNaN(arrivalAt.getTime())) {
+            const time = String(pickup.pickup_time || trip.departure_time || '').split(':');
+            const [year, month, day] = tripDate.split('-').map(Number);
+            const hour = Number(time[0]);
+            const minute = Number(time[1]);
+            if ([year, month, day, hour, minute].every(Number.isFinite)) {
+              // Schedule times are local India time; convert them to an absolute timestamp.
+              const scheduled = Date.UTC(year, month - 1, day, hour, minute) - (330 * 60 * 1000);
+              arrivalAt = new Date(scheduled);
+              const departureParts = String(trip.departure_time || '').split(':');
+              const departureMinutes = Number(departureParts[0]) * 60 + Number(departureParts[1]);
+              const stopMinutes = hour * 60 + minute;
+              if (Number.isFinite(departureMinutes) && stopMinutes < departureMinutes) {
+                arrivalAt.setUTCDate(arrivalAt.getUTCDate() + 1);
+              }
+            }
+          }
+          if (arrivalAt && Number.isFinite(arrivalAt.getTime()) && Date.now() >= arrivalAt.getTime() - cutoffMinutes * 60 * 1000) {
             await t.rollback();
-
             return res.status(400).json({
               status: 400,
               success: false,
-              message:
-                'Cancellation is blocked because the driver-to-pickup ETA is unavailable.',
-              data: null,
-            });
-          }
-
-          // Conservative lower bound for urban shuttle travel time.
-          // Configure CANCELLATION_ETA_MIN_AVG_SPEED_KMH in .env.
-          const configuredSpeed = Number(
-            process.env.CANCELLATION_ETA_MIN_AVG_SPEED_KMH || 25
-          );
-
-          const minimumAverageSpeed =
-            Number.isFinite(configuredSpeed) && configuredSpeed > 0
-              ? configuredSpeed
-              : 25;
-
-          const distanceBasedEta =
-            Number.isFinite(distanceMeters) && distanceMeters > 0
-              ? (distanceMeters / 1000 / minimumAverageSpeed) * 60
-              : 0;
-
-          // Use whichever estimate is longer.
-          const effectiveEta = Math.max(
-            etaMinutes,
-            distanceBasedEta
-          );
-
-          console.log('[CANCELLATION ETA RESULT]', {
-            road_distance_meters: distanceMeters,
-            provider_eta_minutes: etaMinutes,
-            distance_based_minimum_minutes: distanceBasedEta,
-            effective_eta_minutes: effectiveEta,
-          });
-
-          if (effectiveEta <= 30) {
-            await t.rollback();
-
-            return res.status(400).json({
-              status: 400,
-              success: false,
-              message:
-                'Cancellation is not allowed when the driver is 30 minutes or less from the pickup stop.',
-              data: {
-                eta_minutes: Number(effectiveEta.toFixed(2)),
-                provider_eta_minutes: Number(etaMinutes.toFixed(2)),
-                distance_meters: Number.isFinite(distanceMeters)
-                  ? Math.round(distanceMeters)
-                  : null,
-              },
+              message: `Cancellation is not allowed within ${cutoffMinutes} minutes of your pickup stop arrival.`,
+              data: { pickup_stop_id: booking.origin_stop_id, cutoff_minutes: cutoffMinutes, scheduled_arrival: arrivalAt.toISOString(), cancellation_cutoff: new Date(arrivalAt.getTime() - cutoffMinutes * 60 * 1000).toISOString() },
             });
           }
         }
@@ -2891,8 +2826,9 @@ exports.cancelBooking = async (req, res, next) => {
 
       const refundRef =
         `REF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      const approvalRequired = await refundApprovalRequired();
 
-      if (isWalletRefund && passenger) {
+      if (isWalletRefund && passenger && !approvalRequired) {
         // Direct instant credit to passenger's wallet
         const currentBalance = Number(passenger.wallet_balance || 0);
         walletBalanceAfter = Math.round((currentBalance + refundAmount) * 100) / 100;
@@ -2931,12 +2867,23 @@ exports.cancelBooking = async (req, res, next) => {
         if (payment) {
           await payment.update({ status: 'refunded' }, { transaction: t });
         }
+      } else if (isWalletRefund && passenger) {
+        refundRecord = await Refund.create({
+          booking_id: booking.id,
+          payment_id: payment?.id || null,
+          passenger_id: passenger.id,
+          refund_reference: refundRef,
+          refund_amount: refundAmount,
+          refund_reason: cancellation_reason,
+          refund_method: 'wallet',
+          status: 'pending',
+          notes: 'Awaiting administrator approval before wallet credit.',
+        }, { transaction: t });
       } else {
         // Gateway Bank Refund via PayU.
         // If the refund admin-approval setting is DISABLED, initiate the refund
         // with PayU right away (no admin approval needed). Otherwise queue it
         // as pending for admin approval.
-        const approvalRequired = await refundApprovalRequired();
         refundRecord = await Refund.create(
           {
             booking_id: booking.id,
@@ -2992,6 +2939,8 @@ exports.cancelBooking = async (req, res, next) => {
     const responseMessage = refundRecord
       ? walletCredited
         ? `Booking cancelled successfully. Refund of ₹${refundAmount} has been credited to your wallet immediately.`
+        : refundRecord.status === 'pending'
+          ? `Booking cancelled successfully. Refund of ₹${refundAmount} is awaiting administrator approval.`
         : payuRefundInitiated
           ? `Booking cancelled successfully. Refund of ₹${refundAmount} has been initiated to your bank via PayU and will reflect once processed.`
           : `Booking cancelled successfully. Refund request of ₹${refundAmount} to bank via PayU is pending processing.`

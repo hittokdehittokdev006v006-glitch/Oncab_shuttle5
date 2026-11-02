@@ -90,8 +90,23 @@ const getScheduleDepartureTimestamp = (schedule, fallbackDate = null) => {
   return Number.isNaN(timestamp.getTime()) ? null : timestamp;
 };
 
+const hasRequiredScheduleAssignment = (schedule) => {
+  const routeId = schedule?.route_id ?? schedule?.route?.id ?? schedule?.main_route?.id;
+  const vehicleId = schedule?.vehicle_id ?? schedule?.vehicle?.id;
+  return routeId != null && routeId !== '' && vehicleId != null && vehicleId !== '';
+};
+
 const getAssignmentStartState = (schedule, assignmentDate) => {
   const scheduledAt = getScheduleDepartureTimestamp(schedule, assignmentDate);
+
+  if (!hasRequiredScheduleAssignment(schedule)) {
+    return {
+      scheduled_at: scheduledAt,
+      can_start: false,
+      message: 'Trip cannot be started because route or vehicle is not assigned.',
+    };
+  }
+
   const now = new Date();
   const canStart = Boolean(scheduledAt) && now >= scheduledAt;
 
