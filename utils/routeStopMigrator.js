@@ -23,6 +23,11 @@ async function syncRouteStopsTable() {
       `);
     }
 
+    const [existingRows] = await sequelize.query('SELECT COUNT(*) AS total FROM `route_stops`');
+    if (Number(existingRows[0]?.total || 0) > 0) {
+      return;
+    }
+
     await sequelize.query(`
       INSERT IGNORE INTO route_stops (route_id, stop_id, stop_sequence, pickup_allowed, dropoff_allowed, status, created_at, updated_at)
       SELECT route_id, id, IFNULL(stop_sequence, 1), 1, 1, 'Active', NOW(), NOW()
