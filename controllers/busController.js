@@ -1122,7 +1122,19 @@ exports.getUserBookings = async (req, res, next) => {
     }
     if (passenger_id) where.passenger_id = passenger_id;
     if (passenger_mobile) where.passenger_mobile = passenger_mobile;
-    if (booking_status) where.booking_status = booking_status;
+    if (booking_status === 'upcoming') {
+      const today = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
+
+      where.booking_status = { [Op.in]: ['confirmed', 'rescheduled'] };
+      where[Op.and] = [{ travel_date: { [Op.gte]: today } }];
+    } else if (booking_status) {
+      where.booking_status = booking_status;
+    }
     if (travel_date) where.travel_date = travel_date;
 
     const { offset, limit: lim, page: p } = buildPagination(page, limit);
